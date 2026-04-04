@@ -16,6 +16,8 @@ import io.livekit.android.example.voiceassistant.screen.ConnectRoute
 import io.livekit.android.example.voiceassistant.screen.ConnectScreen
 import io.livekit.android.example.voiceassistant.screen.HermesRoute
 import io.livekit.android.example.voiceassistant.screen.HermesScreen
+import io.livekit.android.example.voiceassistant.screen.MainDashboardRoute
+import io.livekit.android.example.voiceassistant.screen.MainDashboardScreen
 import io.livekit.android.example.voiceassistant.screen.SettingsRoute
 import io.livekit.android.example.voiceassistant.screen.SettingsScreen
 import io.livekit.android.example.voiceassistant.screen.VoiceAssistantRoute
@@ -37,7 +39,10 @@ class MainActivity : ComponentActivity() {
                     Box(modifier = Modifier.padding(innerPadding)) {
 
                         // Set up NavHost for the app
-                        NavHost(navController, startDestination = HermesRoute) {
+                        NavHost(navController, startDestination = MainDashboardRoute) {
+                            composable<MainDashboardRoute> {
+                                MainDashboardScreen()
+                            }
                             composable<HermesRoute> {
                                 HermesScreen(
                                     navigateToSettings = {

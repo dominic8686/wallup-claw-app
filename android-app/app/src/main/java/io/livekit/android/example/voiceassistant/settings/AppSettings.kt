@@ -3,6 +3,7 @@ package io.livekit.android.example.voiceassistant.settings
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -40,6 +41,14 @@ class AppSettings(private val context: Context) {
         private val CALL_MODE_KEY = stringPreferencesKey("call_mode")
         private val WAKEWORD_MODEL_KEY = stringPreferencesKey("wakeword_model")
         private val WAKEWORD_SENSITIVITY_KEY = floatPreferencesKey("wakeword_sensitivity")
+        private val HA_URL_KEY = stringPreferencesKey("ha_url")
+        private val HA_AUTO_DETECTED_KEY = booleanPreferencesKey("ha_auto_detected")
+        private val LIVEKIT_SERVER_URL_KEY = stringPreferencesKey("livekit_server_url")
+        private val TOKEN_SERVER_URL_KEY = stringPreferencesKey("token_server_url")
+
+        const val DEFAULT_HA_URL = "http://homeassistant.local:8123"
+        const val DEFAULT_LIVEKIT_URL = "ws://192.168.211.153:7880"
+        const val DEFAULT_TOKEN_SERVER_URL = "http://192.168.211.153:8090"
     }
 
     val callMode: Flow<CallMode> = context.dataStore.data.map { prefs ->
@@ -54,6 +63,22 @@ class AppSettings(private val context: Context) {
         prefs[WAKEWORD_SENSITIVITY_KEY] ?: 0.5f
     }
 
+    val haUrl: Flow<String> = context.dataStore.data.map { prefs ->
+        prefs[HA_URL_KEY] ?: DEFAULT_HA_URL
+    }
+
+    val haAutoDetected: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[HA_AUTO_DETECTED_KEY] ?: false
+    }
+
+    val livekitServerUrl: Flow<String> = context.dataStore.data.map { prefs ->
+        prefs[LIVEKIT_SERVER_URL_KEY] ?: DEFAULT_LIVEKIT_URL
+    }
+
+    val tokenServerUrl: Flow<String> = context.dataStore.data.map { prefs ->
+        prefs[TOKEN_SERVER_URL_KEY] ?: DEFAULT_TOKEN_SERVER_URL
+    }
+
     suspend fun setCallMode(mode: CallMode) {
         context.dataStore.edit { it[CALL_MODE_KEY] = mode.value }
     }
@@ -64,5 +89,21 @@ class AppSettings(private val context: Context) {
 
     suspend fun setWakeWordSensitivity(sensitivity: Float) {
         context.dataStore.edit { it[WAKEWORD_SENSITIVITY_KEY] = sensitivity }
+    }
+
+    suspend fun setHaUrl(url: String) {
+        context.dataStore.edit { it[HA_URL_KEY] = url }
+    }
+
+    suspend fun setHaAutoDetected(detected: Boolean) {
+        context.dataStore.edit { it[HA_AUTO_DETECTED_KEY] = detected }
+    }
+
+    suspend fun setLivekitServerUrl(url: String) {
+        context.dataStore.edit { it[LIVEKIT_SERVER_URL_KEY] = url }
+    }
+
+    suspend fun setTokenServerUrl(url: String) {
+        context.dataStore.edit { it[TOKEN_SERVER_URL_KEY] = url }
     }
 }
