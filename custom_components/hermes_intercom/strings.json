@@ -1,0 +1,16 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Hermes Intercom",
+        "description": "Enter the URL of your LiveKit token server.",
+        "data": {
+          "token_server_url": "Token Server URL"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to the token server. Make sure it is running and reachable."
+    }
+  }
+}
