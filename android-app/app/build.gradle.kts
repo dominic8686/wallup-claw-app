@@ -77,6 +77,13 @@ dependencies {
     implementation(libs.gson)
     implementation(libs.okhttp)
     implementation(libs.timberkt)
+
+    // Wake word detection (ONNX Runtime)
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.0")
+
+    // Settings persistence
+    implementation("androidx.datastore:datastore-preferences:1.1.1")
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

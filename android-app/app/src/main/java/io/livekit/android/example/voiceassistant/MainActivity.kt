@@ -14,6 +14,8 @@ import androidx.navigation.compose.rememberNavController
 import io.livekit.android.LiveKit
 import io.livekit.android.example.voiceassistant.screen.ConnectRoute
 import io.livekit.android.example.voiceassistant.screen.ConnectScreen
+import io.livekit.android.example.voiceassistant.screen.SettingsRoute
+import io.livekit.android.example.voiceassistant.screen.SettingsScreen
 import io.livekit.android.example.voiceassistant.screen.VoiceAssistantRoute
 import io.livekit.android.example.voiceassistant.screen.VoiceAssistantScreen
 import io.livekit.android.example.voiceassistant.ui.theme.LiveKitVoiceAssistantExampleTheme
@@ -35,11 +37,24 @@ class MainActivity : ComponentActivity() {
                         // Set up NavHost for the app
                         NavHost(navController, startDestination = ConnectRoute) {
                             composable<ConnectRoute> {
-                                ConnectScreen(navigateToVoiceAssistant = { voiceAssistantRoute ->
-                                    runOnUiThread {
-                                        navController.navigate(voiceAssistantRoute)
+                                ConnectScreen(
+                                    navigateToVoiceAssistant = { voiceAssistantRoute ->
+                                        runOnUiThread {
+                                            navController.navigate(voiceAssistantRoute)
+                                        }
+                                    },
+                                    navigateToSettings = {
+                                        runOnUiThread {
+                                            navController.navigate(SettingsRoute)
+                                        }
                                     }
-                                })
+                                )
+                            }
+
+                            composable<SettingsRoute> {
+                                SettingsScreen(
+                                    onBack = { runOnUiThread { navController.navigateUp() } }
+                                )
                             }
 
                             composable<VoiceAssistantRoute> {
