@@ -6,6 +6,7 @@ import ai.onnxruntime.OrtSession
 import android.content.Context
 import android.util.Log
 import java.nio.FloatBuffer
+import java.util.LinkedList
 
 /**
  * Swappable wake word detection engine interface.
@@ -13,6 +14,7 @@ import java.nio.FloatBuffer
 interface WakeWordEngine {
     val engineName: String
     val isInitialized: Boolean
+    var onScoreUpdate: ((Float) -> Unit)?
     fun initialize(context: Context, modelAssetPath: String, sensitivity: Float)
     fun processAudio(audioData: ShortArray): Float
     fun release()
@@ -20,89 +22,150 @@ interface WakeWordEngine {
 
 /**
  * OpenWakeWord engine using ONNX Runtime for on-device inference.
- * Expects 16kHz mono 16-bit PCM audio.
+ *
+ * Implements the full 3-stage pipeline:
+ *   1. melspectrogram.onnx - Raw 16kHz PCM -> mel features
+ *   2. embedding_model.onnx - mel features -> 96-dim embedding
+ *   3. <wakeword>.onnx - embeddings -> detection score
  */
 class OpenWakeWordEngine : WakeWordEngine {
 
     override val engineName: String = "OpenWakeWord"
     override var isInitialized: Boolean = false
         private set
+    override var onScoreUpdate: ((Float) -> Unit)? = null
 
-    private var ortEnvironment: OrtEnvironment? = null
-    private var ortSession: OrtSession? = null
+    private var ortEnv: OrtEnvironment? = null
+    private var melSession: OrtSession? = null
+    private var embSession: OrtSession? = null
+    private var wwSession: OrtSession? = null
     private var sensitivity: Float = 0.5f
 
-    // Accumulate audio to fill model's expected input size
+    // Audio buffer (80ms = 1280 samples at 16kHz per mel frame)
     private val audioBuffer = mutableListOf<Float>()
-    private val FRAME_SIZE = 1280 // 80ms at 16kHz — openWakeWord expects this
+    private val MEL_FRAME_SAMPLES = 1280
+
+    // Mel feature accumulation
+    private val melFeatures = LinkedList<FloatArray>()
+    private val MEL_FRAMES_PER_EMBEDDING = 76
+    private val MEL_STEP = 8
+    private var melFrameCount = 0
+
+    // Embedding accumulation
+    private val embeddings = LinkedList<FloatArray>()
+    private val EMBEDDINGS_PER_DETECTION = 16
 
     override fun initialize(context: Context, modelAssetPath: String, sensitivity: Float) {
         try {
             this.sensitivity = sensitivity
-            ortEnvironment = OrtEnvironment.getEnvironment()
+            ortEnv = OrtEnvironment.getEnvironment()
 
-            val modelBytes = context.assets.open(modelAssetPath).readBytes()
-            ortSession = ortEnvironment!!.createSession(modelBytes)
+            val opts = OrtSession.SessionOptions()
+            opts.setInterOpNumThreads(1)
+            opts.setIntraOpNumThreads(1)
+
+            melSession = ortEnv!!.createSession(
+                context.assets.open("wakeword_models/melspectrogram.onnx").readBytes(), opts
+            )
+            Log.i(TAG, "Loaded melspectrogram model")
+
+            embSession = ortEnv!!.createSession(
+                context.assets.open("wakeword_models/embedding_model.onnx").readBytes(), opts
+            )
+            Log.i(TAG, "Loaded embedding model")
+
+            wwSession = ortEnv!!.createSession(
+                context.assets.open(modelAssetPath).readBytes(), opts
+            )
+            Log.i(TAG, "Loaded wake word model: $modelAssetPath")
+
             isInitialized = true
-            Log.i(TAG, "OpenWakeWord model loaded: $modelAssetPath")
+            Log.i(TAG, "Pipeline ready (sensitivity=$sensitivity)")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to load OpenWakeWord model: $modelAssetPath", e)
+            Log.e(TAG, "Init failed", e)
             isInitialized = false
         }
     }
 
     override fun processAudio(audioData: ShortArray): Float {
-        if (!isInitialized || ortSession == null) return 0f
+        if (!isInitialized) return 0f
 
-        // Convert to float and accumulate
-        for (sample in audioData) {
-            audioBuffer.add(sample.toFloat() / 32768f)
-        }
+        for (s in audioData) audioBuffer.add(s.toFloat() / 32768f)
 
-        // Need enough data for one frame
-        if (audioBuffer.size < FRAME_SIZE) return 0f
+        var bestScore = 0f
 
-        return try {
-            val chunk = audioBuffer.take(FRAME_SIZE).toFloatArray()
-            repeat(FRAME_SIZE) { audioBuffer.removeAt(0) }
+        while (audioBuffer.size >= MEL_FRAME_SAMPLES) {
+            val frame = FloatArray(MEL_FRAME_SAMPLES)
+            for (i in 0 until MEL_FRAME_SAMPLES) frame[i] = audioBuffer.removeAt(0)
 
-            val inputShape = longArrayOf(1, FRAME_SIZE.toLong())
-            val inputBuffer = FloatBuffer.wrap(chunk)
-            val inputTensor = OnnxTensor.createTensor(ortEnvironment, inputBuffer, inputShape)
+            // Stage 1: Mel spectrogram
+            val mel = runMel(frame) ?: continue
+            melFeatures.add(mel)
+            melFrameCount++
 
-            val results = ortSession!!.run(mapOf(ortSession!!.inputNames.first() to inputTensor))
-            val output = results[0].value
+            // Stage 2: Embedding (every MEL_STEP frames)
+            if (melFeatures.size >= MEL_FRAMES_PER_EMBEDDING && melFrameCount % MEL_STEP == 0) {
+                val emb = runEmbedding(melFeatures.takeLast(MEL_FRAMES_PER_EMBEDDING)) ?: continue
+                embeddings.add(emb)
+                if (embeddings.size > EMBEDDINGS_PER_DETECTION) embeddings.removeFirst()
 
-            val score = when (output) {
-                is Array<*> -> {
-                    @Suppress("UNCHECKED_CAST")
-                    val arr = output as? Array<FloatArray>
-                    arr?.firstOrNull()?.firstOrNull() ?: 0f
+                // Stage 3: Detection
+                if (embeddings.size >= EMBEDDINGS_PER_DETECTION) {
+                    val score = runDetection(embeddings.toList())
+                    if (score > bestScore) bestScore = score
+                    onScoreUpdate?.invoke(score)
+
+                    if (score > sensitivity) {
+                        Log.i(TAG, "DETECTED! score=${"%.3f".format(score)} threshold=$sensitivity")
+                    }
                 }
-                is FloatArray -> output.firstOrNull() ?: 0f
-                else -> 0f
             }
 
-            inputTensor.close()
-            results.close()
-
-            score
-        } catch (e: Exception) {
-            Log.e(TAG, "Inference error", e)
-            0f
+            // Trim
+            while (melFeatures.size > MEL_FRAMES_PER_EMBEDDING + 20) melFeatures.removeFirst()
         }
+
+        return bestScore
     }
+
+    private fun runMel(pcm: FloatArray): FloatArray? = try {
+        val t = OnnxTensor.createTensor(ortEnv, FloatBuffer.wrap(pcm), longArrayOf(1, pcm.size.toLong()))
+        val r = melSession!!.run(mapOf(melSession!!.inputNames.first() to t))
+        // Output: [1, 1, N, 32] - take last frame's 32 mel bins
+        @Suppress("UNCHECKED_CAST")
+        val out = (r[0].value as? Array<Array<Array<FloatArray>>>)?.get(0)?.get(0)?.lastOrNull()
+        t.close(); r.close(); out
+    } catch (e: Exception) { Log.e(TAG, "Mel err: ${e.message}"); null }
+
+    private fun runEmbedding(mels: List<FloatArray>): FloatArray? = try {
+        val n = mels.size; val bins = mels[0].size
+        val flat = FloatArray(n * bins)
+        mels.forEachIndexed { i, m -> System.arraycopy(m, 0, flat, i * bins, bins) }
+        val t = OnnxTensor.createTensor(ortEnv, FloatBuffer.wrap(flat), longArrayOf(1, 1, n.toLong(), bins.toLong()))
+        val r = embSession!!.run(mapOf(embSession!!.inputNames.first() to t))
+        @Suppress("UNCHECKED_CAST")
+        val out = (r[0].value as? Array<FloatArray>)?.get(0) ?: (r[0].value as? FloatArray)
+        t.close(); r.close(); out
+    } catch (e: Exception) { Log.e(TAG, "Emb err: ${e.message}"); null }
+
+    private fun runDetection(embs: List<FloatArray>): Float = try {
+        val n = embs.size; val sz = embs[0].size
+        val flat = FloatArray(n * sz)
+        embs.forEachIndexed { i, e -> System.arraycopy(e, 0, flat, i * sz, sz) }
+        val t = OnnxTensor.createTensor(ortEnv, FloatBuffer.wrap(flat), longArrayOf(1, flat.size.toLong()))
+        val r = wwSession!!.run(mapOf(wwSession!!.inputNames.first() to t))
+        @Suppress("UNCHECKED_CAST")
+        val score = (r[0].value as? Array<FloatArray>)?.get(0)?.get(0)
+            ?: (r[0].value as? FloatArray)?.get(0) ?: 0f
+        t.close(); r.close(); score
+    } catch (e: Exception) { Log.e(TAG, "Det err: ${e.message}"); 0f }
 
     override fun release() {
-        ortSession?.close()
-        ortEnvironment?.close()
-        ortSession = null
-        ortEnvironment = null
+        wwSession?.close(); embSession?.close(); melSession?.close(); ortEnv?.close()
+        wwSession = null; embSession = null; melSession = null; ortEnv = null
         isInitialized = false
-        audioBuffer.clear()
+        audioBuffer.clear(); melFeatures.clear(); embeddings.clear(); melFrameCount = 0
     }
 
-    companion object {
-        private const val TAG = "OpenWakeWord"
-    }
+    companion object { private const val TAG = "OpenWakeWord" }
 }
