@@ -448,6 +448,9 @@ async def main():
     hermes = HermesChat()
     vad = SimpleVAD()
     processing = False  # Prevent overlapping processing
+    agent_active = False  # IDLE by default, ACTIVE when wake word detected
+    last_speech_time = [0.0]  # Mutable ref for silence timeout tracking
+    SILENCE_TIMEOUT = 30  # seconds of no speech before going back to IDLE
 
     logger.info("Connecting to LiveKit at %s, room=%s", url, room_name)
     await room.connect(url, token)
@@ -455,16 +458,44 @@ async def main():
     _room_ref = room
     logger.info("Connected to room: %s", room_name)
 
-    # Publish a greeting
-    async def greet():
-        nonlocal processing
+    # Activate conversation (called when wake_word_detected received)
+    async def activate():
+        nonlocal processing, agent_active
+        import time as _time
+        agent_active = True
+        last_speech_time[0] = _time.monotonic()
         processing = True
         try:
-            greeting = await hermes.chat("The user just connected. Greet them warmly and briefly.")
+            logger.info("Agent ACTIVE - starting conversation")
+            await relay_transcript("system", "🌟 Conversation started")
+            greeting = await hermes.chat("The user just said the wake word Hey Jarvis. Greet them warmly and briefly.")
             logger.info("Greeting: %s", greeting)
             await speak(greeting)
         finally:
             processing = False
+
+    async def deactivate():
+        nonlocal agent_active
+        agent_active = False
+        logger.info("Agent IDLE - conversation ended")
+        await relay_transcript("system", "💤 Conversation ended, listening for wake word...")
+        # Signal tablet to return to wake word mode
+        try:
+            msg = _json.dumps({"type": "conversation_ended"})
+            await room.local_participant.publish_data(msg.encode(), reliable=True, topic="hermes-control")
+        except Exception:
+            pass
+
+    # Silence timeout checker
+    async def silence_timeout_checker():
+        import time as _time
+        while True:
+            await asyncio.sleep(5)
+            if agent_active and not processing:
+                elapsed = _time.monotonic() - last_speech_time[0]
+                if elapsed > SILENCE_TIMEOUT:
+                    logger.info("Silence timeout (%.0fs), deactivating", elapsed)
+                    await deactivate()
 
     # Persistent audio source and track for TTS playback
     tts_source = rtc.AudioSource(24000, 1)
@@ -526,7 +557,7 @@ async def main():
             async def process_audio():
                 nonlocal processing, frame_count
                 async for event in audio_stream:
-                    if processing:
+                    if processing or not agent_active:
                         continue
 
                     frame = event.frame
@@ -567,6 +598,8 @@ async def main():
             if not transcript:
                 return
 
+            import time as _time
+            last_speech_time[0] = _time.monotonic()
             logger.info("User said: %s", transcript)
             await relay_transcript("user", transcript)
 
@@ -583,20 +616,28 @@ async def main():
         finally:
             processing = False
 
-    # Wait for a participant before greeting
+    # Listen for data messages from tablet (wake word signal)
+    @room.on("data_received")
+    def on_data(data: bytes, participant, kind, topic):
+        try:
+            msg = _json.loads(data.decode())
+            if msg.get("type") == "wake_word_detected":
+                score = msg.get("score", 0)
+                logger.info("Received wake_word_detected (score=%s) from %s", score, participant.identity if participant else "unknown")
+                if not agent_active:
+                    asyncio.ensure_future(activate())
+        except Exception as e:
+            logger.debug("Data parse error: %s", e)
+
     @room.on("participant_connected")
     def on_participant(participant: rtc.RemoteParticipant):
         logger.info("Participant joined: %s", participant.identity)
-        asyncio.ensure_future(greet())
 
-    # If participant already in room, greet immediately
-    if len(room.remote_participants) > 0:
-        asyncio.ensure_future(greet())
+    logger.info("Agent ready (IDLE mode), waiting for wake word signal...")
 
-    logger.info("Agent ready, waiting for audio...")
-
-    # Start Home Assistant event listener
+    # Start background tasks
     asyncio.ensure_future(ha_event_listener())
+    asyncio.ensure_future(silence_timeout_checker())
 
     # Keep running
     try:
