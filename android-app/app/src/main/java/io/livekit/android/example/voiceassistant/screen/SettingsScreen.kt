@@ -165,7 +165,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text("Score: ${"%05.3f".format(currentScore)}", fontWeight = FontWeight.Bold)
+                    Text("Score: ${"%08.6f".format(currentScore)}", fontWeight = FontWeight.Bold)
                     Text(
                         if (currentScore >= sensitivity) "DETECTED" else "listening...",
                         color = if (currentScore >= sensitivity) Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -184,7 +184,9 @@ fun SettingsScreen(onBack: () -> Unit) {
                             val modelInfo = BUNDLED_MODELS.find { it.id == selectedModel } ?: BUNDLED_MODELS.first()
                             scope.launch(Dispatchers.Default) {
                                 val engine = OpenWakeWordEngine()
-                                engine.onScoreUpdate = { score -> currentScore = score }
+                                engine.onScoreUpdate = { score ->
+                                    scope.launch(Dispatchers.Main) { currentScore = score }
+                                }
                                 engine.initialize(context, modelInfo.assetPath, sensitivity)
                                 if (!engine.isInitialized) {
                                     isTesting = false
