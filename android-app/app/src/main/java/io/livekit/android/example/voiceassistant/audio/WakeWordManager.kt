@@ -25,6 +25,7 @@ import kotlin.coroutines.CoroutineContext
 class WakeWordManager(private val context: Context) : CoroutineScope {
     override val coroutineContext: CoroutineContext = SupervisorJob() + Dispatchers.Default
 
+    @Volatile
     private var model: PredictionModel? = null
     private val _scores = MutableSharedFlow<Float>(extraBufferCapacity = 10)
     val scores: SharedFlow<Float> = _scores
@@ -53,8 +54,10 @@ class WakeWordManager(private val context: Context) : CoroutineScope {
     }
 
     fun release() {
-        model?.close()
-        model = null
+        val m = model
+        model = null  // Null first to prevent concurrent access
+        Thread.sleep(100)  // Let in-flight predictions finish
+        m?.close()
     }
 
     companion object { private const val TAG = "WakeWordMgr" }
