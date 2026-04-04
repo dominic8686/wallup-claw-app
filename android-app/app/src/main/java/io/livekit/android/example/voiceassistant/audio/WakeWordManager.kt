@@ -43,8 +43,12 @@ class WakeWordManager(private val context: Context) : CoroutineScope {
 
     fun processAudio(data: ByteArray, size: Int) {
         launch {
-            val score = model?.predict(data, size) ?: 0f
-            _scores.emit(score)
+            try {
+                val score = model?.predict(data, size) ?: 0f
+                _scores.emit(score)
+            } catch (_: Exception) {
+                // Session may be closed during cleanup
+            }
         }
     }
 
