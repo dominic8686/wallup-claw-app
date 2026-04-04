@@ -20,6 +20,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import io.livekit.android.renderer.TextureViewRenderer
+import io.livekit.android.room.track.VideoTrack
 
 data class ChatMessage(
     val id: String,
@@ -38,6 +41,7 @@ enum class ConversationStatus {
 fun ConversationCard(
     messages: List<ChatMessage>,
     status: ConversationStatus,
+    avatarVideoTrack: VideoTrack? = null,
     modifier: Modifier = Modifier,
 ) {
     val statusColor = Color(0xFF4CAF50) // Green
@@ -90,6 +94,22 @@ fun ConversationCard(
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 24.sp,
                 color = statusColor,
+            )
+        }
+
+        // Avatar video (if available)
+        if (avatarVideoTrack != null) {
+            AndroidView(
+                factory = { ctx ->
+                    TextureViewRenderer(ctx).apply {
+                        avatarVideoTrack.addRenderer(this)
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(0.45f)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color.Black)
             )
         }
 
