@@ -11,6 +11,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.emoji2.text.EmojiCompat
+import androidx.emoji2.bundled.BundledEmojiCompatConfig
 import io.livekit.android.LiveKit
 import io.livekit.android.example.voiceassistant.screen.ConnectRoute
 import io.livekit.android.example.voiceassistant.screen.ConnectScreen
@@ -31,6 +33,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         LiveKit.loggingLevel = LoggingLevel.DEBUG
+
+        // Initialize bundled emoji font so emojis render on all devices
+        EmojiCompat.init(BundledEmojiCompatConfig(this))
 
         setContent {
             val navController = rememberNavController()

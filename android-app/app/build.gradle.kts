@@ -84,6 +84,10 @@ dependencies {
     // Settings persistence
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 
+    // Emoji support (ensures emojis render on all devices)
+    implementation("androidx.emoji2:emoji2:1.5.0")
+    implementation("androidx.emoji2:emoji2-bundled:1.5.0")
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

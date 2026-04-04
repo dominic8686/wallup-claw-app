@@ -1,0 +1,50 @@
+blueprint:
+  name: "Bedtime DND Schedule"
+  description: >
+    Enable Do Not Disturb on selected tablets at bedtime and disable it in the morning.
+  domain: automation
+  input:
+    target_devices:
+      name: Tablets
+      description: "Comma-separated device IDs to put in DND mode (e.g., 'bedroom_1,bedroom_2')."
+      selector:
+        text:
+    bedtime:
+      name: Bedtime
+      description: "Time to enable DND."
+      selector:
+        time:
+      default: "21:00:00"
+    wake_time:
+      name: Wake Time
+      description: "Time to disable DND."
+      selector:
+        time:
+      default: "07:00:00"
+
+trigger:
+  - platform: time
+    at: !input bedtime
+    id: bedtime
+  - platform: time
+    at: !input wake_time
+    id: waketime
+
+action:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: bedtime
+        sequence:
+          - service: hermes_intercom.set_dnd
+            data:
+              target: !input target_devices
+              enabled: true
+      - conditions:
+          - condition: trigger
+            id: waketime
+        sequence:
+          - service: hermes_intercom.set_dnd
+            data:
+              target: !input target_devices
+              enabled: false
