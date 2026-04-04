@@ -32,6 +32,9 @@ fun SettingsScreen(onBack: () -> Unit) {
     val callMode by settings.callMode.collectAsState(initial = CallMode.MANUAL)
     val selectedModel by settings.wakeWordModel.collectAsState(initial = BUNDLED_MODELS.first().id)
     val sensitivity by settings.wakeWordSensitivity.collectAsState(initial = 0.5f)
+    val deviceId by settings.deviceId.collectAsState(initial = AppSettings.DEFAULT_DEVICE_ID)
+    val deviceDisplayName by settings.deviceDisplayName.collectAsState(initial = AppSettings.DEFAULT_DEVICE_DISPLAY_NAME)
+    val deviceRoomLocation by settings.deviceRoomLocation.collectAsState(initial = AppSettings.DEFAULT_DEVICE_ROOM_LOCATION)
 
     Scaffold(
         topBar = {
@@ -52,6 +55,61 @@ fun SettingsScreen(onBack: () -> Unit) {
                 .padding(horizontal = 24.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(24.dp)
         ) {
+            // --- Device Identity ---
+            Text("Device Identity", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            Text(
+                "Give this tablet a unique ID so other devices can find and call it.",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            var editDeviceId by remember { mutableStateOf(deviceId) }
+            var editDisplayName by remember { mutableStateOf(deviceDisplayName) }
+            var editRoomLocation by remember { mutableStateOf(deviceRoomLocation) }
+
+            // Sync when settings load
+            LaunchedEffect(deviceId) { editDeviceId = deviceId }
+            LaunchedEffect(deviceDisplayName) { editDisplayName = deviceDisplayName }
+            LaunchedEffect(deviceRoomLocation) { editRoomLocation = deviceRoomLocation }
+
+            OutlinedTextField(
+                value = editDeviceId,
+                onValueChange = {
+                    editDeviceId = it
+                    scope.launch { settings.setDeviceId(it.trim().lowercase()) }
+                },
+                label = { Text("Device ID") },
+                placeholder = { Text("e.g. kitchen, bedroom, office") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            OutlinedTextField(
+                value = editDisplayName,
+                onValueChange = {
+                    editDisplayName = it
+                    scope.launch { settings.setDeviceDisplayName(it) }
+                },
+                label = { Text("Display Name") },
+                placeholder = { Text("e.g. Kitchen Tablet") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            OutlinedTextField(
+                value = editRoomLocation,
+                onValueChange = {
+                    editRoomLocation = it
+                    scope.launch { settings.setDeviceRoomLocation(it) }
+                },
+                label = { Text("Room / Location") },
+                placeholder = { Text("e.g. Kitchen, Living Room") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            HorizontalDivider()
+
             // Call Mode
             Text("Call Mode", fontWeight = FontWeight.Bold, fontSize = 18.sp)
 

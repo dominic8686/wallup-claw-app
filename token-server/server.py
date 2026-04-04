@@ -1,26 +1,117 @@
-"""Minimal token server for LiveKit.
+"""Token & device registry server for LiveKit multi-tablet intercom.
 
 Endpoints:
-  GET /token?identity=<name>&room=<room_name>
-    Returns a JSON object: {"token": "<jwt>", "url": "<livekit_ws_url>"}
+  GET  /token?identity=<device_id>&room=<room_name>
+       Returns: {"token": "<jwt>", "url": "<livekit_ws_url>"}
 
-  GET /health
-    Returns 200 OK
+  POST /register   (JSON body: {device_id, display_name?, room_location?})
+       Registers a tablet in the device registry.
+
+  GET  /devices
+       Returns list of all registered devices with online/offline status.
+
+  POST /heartbeat  (JSON body: {device_id})
+       Refreshes a device's last_seen timestamp. Devices not seen for
+       STALE_TIMEOUT seconds are marked offline.
+
+  POST /signal     (JSON body: {type, from, to, ...})
+       Relays a call-signaling message to the target device's pending queue.
+
+  GET  /signals?device_id=<id>
+       Long-poll: returns pending signals for a device (blocks up to 25s).
+
+  GET  /calls
+       Returns list of active calls.
+
+  GET  /health
+       Returns 200 OK.
 """
 
-import os
+import asyncio
 import json
+import os
+import time
+from typing import Any
 
 from aiohttp import web
 from livekit.api import AccessToken, VideoGrants
 
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
 LIVEKIT_API_KEY = os.environ["LIVEKIT_API_KEY"]
 LIVEKIT_API_SECRET = os.environ["LIVEKIT_API_SECRET"]
-# URL the *client* should connect to (external, not internal docker network)
 LIVEKIT_EXTERNAL_URL = os.environ.get("LIVEKIT_EXTERNAL_URL", "ws://localhost:7880")
 
+STALE_TIMEOUT = 45  # seconds before a device is considered offline
+LONG_POLL_TIMEOUT = 25  # seconds to hold a /signals request
+
+# ---------------------------------------------------------------------------
+# In-memory device registry
+# ---------------------------------------------------------------------------
+
+# device_id -> {display_name, room_location, last_seen, status, call_state}
+device_registry: dict[str, dict[str, Any]] = {}
+
+# device_id -> asyncio.Queue of signal dicts
+signal_queues: dict[str, asyncio.Queue] = {}
+
+# Active calls: call_id -> {from, to, room_name, started_at, status}
+active_calls: dict[str, dict[str, Any]] = {}
+
+
+def _get_or_create_queue(device_id: str) -> asyncio.Queue:
+    if device_id not in signal_queues:
+        signal_queues[device_id] = asyncio.Queue()
+    return signal_queues[device_id]
+
+
+def _mark_stale_devices() -> None:
+    """Mark devices that haven't sent a heartbeat as offline."""
+    now = time.time()
+    for info in device_registry.values():
+        if info["status"] == "online" and (now - info["last_seen"]) > STALE_TIMEOUT:
+            info["status"] = "offline"
+
+
+def _device_to_dict(device_id: str, info: dict) -> dict:
+    return {
+        "device_id": device_id,
+        "display_name": info.get("display_name", device_id),
+        "room_location": info.get("room_location", ""),
+        "status": info.get("status", "offline"),
+        "call_state": info.get("call_state", "idle"),
+        "last_seen": info.get("last_seen", 0),
+    }
+
+
+# ---------------------------------------------------------------------------
+# CORS helper
+# ---------------------------------------------------------------------------
+
+CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+}
+
+
+def _json_response(data: Any, status: int = 200) -> web.Response:
+    return web.Response(
+        text=json.dumps(data),
+        content_type="application/json",
+        status=status,
+        headers=CORS_HEADERS,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Handlers
+# ---------------------------------------------------------------------------
 
 async def handle_token(request: web.Request) -> web.Response:
+    """Issue a LiveKit JWT for a device to join a room."""
     identity = request.query.get("identity", "android-user")
     room = request.query.get("room", "voice-room")
 
@@ -38,23 +129,239 @@ async def handle_token(request: web.Request) -> web.Response:
     )
 
     jwt_token = token.to_jwt()
+    return _json_response({"token": jwt_token, "url": LIVEKIT_EXTERNAL_URL})
 
-    return web.Response(
-        text=json.dumps({"token": jwt_token, "url": LIVEKIT_EXTERNAL_URL}),
-        content_type="application/json",
-        headers={"Access-Control-Allow-Origin": "*"},
-    )
+
+async def handle_register(request: web.Request) -> web.Response:
+    """Register a tablet device."""
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_response({"error": "invalid JSON"}, 400)
+
+    device_id = body.get("device_id", "").strip()
+    if not device_id:
+        return _json_response({"error": "device_id required"}, 400)
+
+    now = time.time()
+    device_registry[device_id] = {
+        "display_name": body.get("display_name", device_id),
+        "room_location": body.get("room_location", ""),
+        "last_seen": now,
+        "status": "online",
+        "call_state": body.get("call_state", "idle"),
+    }
+    _get_or_create_queue(device_id)
+
+    print(f"[registry] Device registered: {device_id} ({body.get('display_name', device_id)})")
+    return _json_response({"ok": True, "device_id": device_id})
+
+
+async def handle_heartbeat(request: web.Request) -> web.Response:
+    """Refresh a device's online status."""
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_response({"error": "invalid JSON"}, 400)
+
+    device_id = body.get("device_id", "").strip()
+    if not device_id or device_id not in device_registry:
+        return _json_response({"error": "unknown device_id"}, 404)
+
+    device_registry[device_id]["last_seen"] = time.time()
+    device_registry[device_id]["status"] = "online"
+
+    # Allow updating call_state via heartbeat
+    if "call_state" in body:
+        device_registry[device_id]["call_state"] = body["call_state"]
+
+    return _json_response({"ok": True})
+
+
+async def handle_devices(request: web.Request) -> web.Response:
+    """Return list of all registered devices with current status."""
+    _mark_stale_devices()
+    devices = [
+        _device_to_dict(did, info)
+        for did, info in device_registry.items()
+    ]
+    return _json_response({"devices": devices})
+
+
+async def handle_signal(request: web.Request) -> web.Response:
+    """Relay a call-signaling message to a target device.
+
+    Body: {type: "call_request"|"call_accept"|"call_decline"|"call_hangup"|"call_ringing",
+           from: "<device_id>", to: "<device_id>", ...extra fields}
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_response({"error": "invalid JSON"}, 400)
+
+    signal_type = body.get("type", "")
+    from_device = body.get("from", "")
+    to_device = body.get("to", "")
+
+    if not signal_type or not from_device or not to_device:
+        return _json_response({"error": "type, from, to required"}, 400)
+
+    # Validate target exists
+    if to_device not in device_registry:
+        return _json_response({"error": f"device '{to_device}' not registered"}, 404)
+
+    _mark_stale_devices()
+    target_info = device_registry[to_device]
+
+    # --- Call state machine ---
+    if signal_type == "call_request":
+        if target_info["status"] != "online":
+            return _json_response({"error": f"device '{to_device}' is offline"}, 409)
+        if target_info["call_state"] == "do_not_disturb":
+            return _json_response({"error": f"device '{to_device}' is in Do Not Disturb mode"}, 409)
+        if target_info["call_state"] not in ("idle",):
+            return _json_response({"error": f"device '{to_device}' is busy ({target_info['call_state']})"}, 409)
+
+        # Create a call record
+        call_id = f"call-{from_device}-{to_device}-{int(time.time())}"
+        room_name = call_id
+        active_calls[call_id] = {
+            "from": from_device,
+            "to": to_device,
+            "room_name": room_name,
+            "started_at": time.time(),
+            "status": "ringing",
+        }
+        body["call_id"] = call_id
+        body["room_name"] = room_name
+
+        # Update device call states
+        if from_device in device_registry:
+            device_registry[from_device]["call_state"] = "calling"
+        device_registry[to_device]["call_state"] = "ringing"
+
+    elif signal_type == "call_accept":
+        call_id = body.get("call_id", "")
+        if call_id in active_calls:
+            active_calls[call_id]["status"] = "active"
+            if from_device in device_registry:
+                device_registry[from_device]["call_state"] = "in_call"
+            if to_device in device_registry:
+                device_registry[to_device]["call_state"] = "in_call"
+
+    elif signal_type == "call_decline":
+        call_id = body.get("call_id", "")
+        if call_id in active_calls:
+            call = active_calls.pop(call_id)
+            if call["from"] in device_registry:
+                device_registry[call["from"]]["call_state"] = "idle"
+            if call["to"] in device_registry:
+                device_registry[call["to"]]["call_state"] = "idle"
+
+    elif signal_type == "call_hangup":
+        call_id = body.get("call_id", "")
+        if call_id in active_calls:
+            call = active_calls.pop(call_id)
+            if call["from"] in device_registry:
+                device_registry[call["from"]]["call_state"] = "idle"
+            if call["to"] in device_registry:
+                device_registry[call["to"]]["call_state"] = "idle"
+
+    # Enqueue signal for the target device
+    body["timestamp"] = time.time()
+    queue = _get_or_create_queue(to_device)
+    await queue.put(body)
+
+    # Also notify the caller for accept/decline/hangup
+    if signal_type in ("call_accept", "call_decline", "call_hangup"):
+        caller_queue = _get_or_create_queue(from_device)
+        await caller_queue.put(body)
+
+    print(f"[signal] {signal_type}: {from_device} -> {to_device}")
+    return _json_response({"ok": True, **{k: body[k] for k in ("call_id", "room_name") if k in body}})
+
+
+async def handle_signals(request: web.Request) -> web.Response:
+    """Long-poll: returns pending signals for a device.
+
+    Blocks up to LONG_POLL_TIMEOUT seconds waiting for signals.
+    Returns immediately if signals are already queued.
+    """
+    device_id = request.query.get("device_id", "").strip()
+    if not device_id:
+        return _json_response({"error": "device_id required"}, 400)
+
+    queue = _get_or_create_queue(device_id)
+    signals = []
+
+    # Drain any already-queued signals
+    while not queue.empty():
+        try:
+            signals.append(queue.get_nowait())
+        except asyncio.QueueEmpty:
+            break
+
+    if signals:
+        return _json_response({"signals": signals})
+
+    # Long-poll: wait for a signal
+    try:
+        signal = await asyncio.wait_for(queue.get(), timeout=LONG_POLL_TIMEOUT)
+        signals.append(signal)
+        # Drain any additional signals that arrived
+        while not queue.empty():
+            try:
+                signals.append(queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+    except asyncio.TimeoutError:
+        pass  # Return empty list on timeout
+
+    return _json_response({"signals": signals})
+
+
+async def handle_calls(request: web.Request) -> web.Response:
+    """Return list of active calls."""
+    return _json_response({"calls": list(active_calls.values())})
+
+
+async def handle_options(request: web.Request) -> web.Response:
+    """Handle CORS preflight."""
+    return web.Response(status=204, headers=CORS_HEADERS)
 
 
 async def handle_health(request: web.Request) -> web.Response:
-    return web.Response(text="ok")
+    return web.Response(text="ok", headers=CORS_HEADERS)
 
+
+# ---------------------------------------------------------------------------
+# App setup
+# ---------------------------------------------------------------------------
 
 app = web.Application()
+
+# Token & health
 app.router.add_get("/token", handle_token)
 app.router.add_get("/health", handle_health)
 
+# Device registry
+app.router.add_post("/register", handle_register)
+app.router.add_post("/heartbeat", handle_heartbeat)
+app.router.add_get("/devices", handle_devices)
+
+# Call signaling
+app.router.add_post("/signal", handle_signal)
+app.router.add_get("/signals", handle_signals)
+app.router.add_get("/calls", handle_calls)
+
+# CORS preflight
+app.router.add_route("OPTIONS", "/register", handle_options)
+app.router.add_route("OPTIONS", "/heartbeat", handle_options)
+app.router.add_route("OPTIONS", "/signal", handle_options)
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8090))
-    print(f"Token server listening on :{port}")
+    print(f"Token & registry server listening on :{port}")
+    print(f"  LiveKit external URL: {LIVEKIT_EXTERNAL_URL}")
+    print(f"  Stale timeout: {STALE_TIMEOUT}s")
     web.run_app(app, host="0.0.0.0", port=port)

@@ -48,12 +48,18 @@ class AppSettings(private val context: Context) {
         private val ANAM_ENABLED_KEY = booleanPreferencesKey("anam_enabled")
         private val ANAM_API_KEY_KEY = stringPreferencesKey("anam_api_key")
         private val ANAM_AVATAR_ID_KEY = stringPreferencesKey("anam_avatar_id")
+        private val DEVICE_ID_KEY = stringPreferencesKey("device_id")
+        private val DEVICE_DISPLAY_NAME_KEY = stringPreferencesKey("device_display_name")
+        private val DEVICE_ROOM_LOCATION_KEY = stringPreferencesKey("device_room_location")
 
         const val DEFAULT_HA_URL = "http://homeassistant.local:8123"
         const val DEFAULT_LIVEKIT_URL = "ws://192.168.211.153:7880"
         const val DEFAULT_TOKEN_SERVER_URL = "http://192.168.211.153:8090"
         const val DEFAULT_ANAM_API_KEY = "OTg0MGVkMGUtYzQyNi00OThlLWI3ZWUtM2ZlZDI3YTk1NDNjOkIvakJtQUp2TUdFcTNtWUZDTGU3bENRa0thcTRxc1NFOWZ4dUpkaWN0cVE9"
         const val DEFAULT_ANAM_AVATAR_ID = "30fa96d0-26c4-4e55-94a0-517025942e18"  // Cara (stock)
+        const val DEFAULT_DEVICE_ID = ""
+        const val DEFAULT_DEVICE_DISPLAY_NAME = ""
+        const val DEFAULT_DEVICE_ROOM_LOCATION = ""
     }
 
     val callMode: Flow<CallMode> = context.dataStore.data.map { prefs ->
@@ -96,6 +102,18 @@ class AppSettings(private val context: Context) {
         prefs[ANAM_AVATAR_ID_KEY] ?: DEFAULT_ANAM_AVATAR_ID
     }
 
+    val deviceId: Flow<String> = context.dataStore.data.map { prefs ->
+        prefs[DEVICE_ID_KEY] ?: DEFAULT_DEVICE_ID
+    }
+
+    val deviceDisplayName: Flow<String> = context.dataStore.data.map { prefs ->
+        prefs[DEVICE_DISPLAY_NAME_KEY] ?: DEFAULT_DEVICE_DISPLAY_NAME
+    }
+
+    val deviceRoomLocation: Flow<String> = context.dataStore.data.map { prefs ->
+        prefs[DEVICE_ROOM_LOCATION_KEY] ?: DEFAULT_DEVICE_ROOM_LOCATION
+    }
+
     suspend fun setCallMode(mode: CallMode) {
         context.dataStore.edit { it[CALL_MODE_KEY] = mode.value }
     }
@@ -134,5 +152,17 @@ class AppSettings(private val context: Context) {
 
     suspend fun setAnamAvatarId(id: String) {
         context.dataStore.edit { it[ANAM_AVATAR_ID_KEY] = id }
+    }
+
+    suspend fun setDeviceId(id: String) {
+        context.dataStore.edit { it[DEVICE_ID_KEY] = id }
+    }
+
+    suspend fun setDeviceDisplayName(name: String) {
+        context.dataStore.edit { it[DEVICE_DISPLAY_NAME_KEY] = name }
+    }
+
+    suspend fun setDeviceRoomLocation(location: String) {
+        context.dataStore.edit { it[DEVICE_ROOM_LOCATION_KEY] = location }
     }
 }

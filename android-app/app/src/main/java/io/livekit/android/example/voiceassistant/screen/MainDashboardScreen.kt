@@ -67,6 +67,9 @@ fun MainDashboardScreen() {
     val anamEnabled by appSettings.anamEnabled.collectAsState(initial = false)
     val anamApiKey by appSettings.anamApiKey.collectAsState(initial = "")
     val anamAvatarId by appSettings.anamAvatarId.collectAsState(initial = "")
+    val deviceId by appSettings.deviceId.collectAsState(initial = AppSettings.DEFAULT_DEVICE_ID)
+    val deviceDisplayName by appSettings.deviceDisplayName.collectAsState(initial = AppSettings.DEFAULT_DEVICE_DISPLAY_NAME)
+    val deviceRoomLocation by appSettings.deviceRoomLocation.collectAsState(initial = AppSettings.DEFAULT_DEVICE_ROOM_LOCATION)
 
     // --- Voice state ---
     var voiceState by remember { mutableStateOf(VoiceState.INITIALIZING) }
@@ -121,19 +124,67 @@ fun MainDashboardScreen() {
         }
     }
 
-    // --- Connect to LiveKit once on launch ---
-    LaunchedEffect(Unit) {
+    // --- Resolve effective device identity (fall back to "android-user" if not set) ---
+    val effectiveDeviceId = if (deviceId.isNotEmpty()) deviceId else "android-user"
+
+    // --- Register device & connect to LiveKit ---
+    LaunchedEffect(effectiveDeviceId) {
+        // Register with token server
+        try {
+            val regBody = JSONObject().apply {
+                put("device_id", effectiveDeviceId)
+                put("display_name", deviceDisplayName.ifEmpty { effectiveDeviceId })
+                put("room_location", deviceRoomLocation)
+            }
+            withContext(Dispatchers.IO) {
+                val conn = java.net.URL("$tokenServerUrl/register").openConnection() as java.net.HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.doOutput = true
+                conn.outputStream.write(regBody.toString().toByteArray())
+                conn.inputStream.bufferedReader().readText()
+                conn.disconnect()
+            }
+            Log.i(TAG, "Device registered: $effectiveDeviceId")
+        } catch (e: Exception) {
+            Log.w(TAG, "Device registration failed: ${e.message}")
+        }
+
+        // Connect to LiveKit with device identity
         try {
             val response = withContext(Dispatchers.IO) {
-                URL("$tokenServerUrl/token?identity=android-user&room=voice-room").readText()
+                URL("$tokenServerUrl/token?identity=$effectiveDeviceId&room=voice-room").readText()
             }
             val json = JSONObject(response)
             val token = json.getString("token")
             room.connect(livekitUrl, token)
             roomConnected = true
-            Log.i(TAG, "LiveKit connected (persistent)")
+            Log.i(TAG, "LiveKit connected as '$effectiveDeviceId'")
         } catch (e: Exception) {
             Log.e(TAG, "LiveKit connect failed: ${e.message}")
+        }
+    }
+
+    // --- Background heartbeat every 15s ---
+    LaunchedEffect(effectiveDeviceId) {
+        while (true) {
+            delay(15_000)
+            try {
+                val hbBody = JSONObject().apply {
+                    put("device_id", effectiveDeviceId)
+                }
+                withContext(Dispatchers.IO) {
+                    val conn = java.net.URL("$tokenServerUrl/heartbeat").openConnection() as java.net.HttpURLConnection
+                    conn.requestMethod = "POST"
+                    conn.setRequestProperty("Content-Type", "application/json")
+                    conn.doOutput = true
+                    conn.outputStream.write(hbBody.toString().toByteArray())
+                    conn.inputStream.bufferedReader().readText()
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Heartbeat failed: ${e.message}")
+            }
         }
     }
 
