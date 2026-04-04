@@ -193,19 +193,36 @@ fun SettingsScreen(onBack: () -> Unit) {
                                     return@launch
                                 }
 
-                                val sr = 16000
-                                val bufSize = AudioRecord.getMinBufferSize(sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+                                // Use 48kHz (device-compatible) and downsample to 16kHz
+                                val captureSr = 48000
+                                val bufSize = AudioRecord.getMinBufferSize(captureSr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+                                android.util.Log.i("WakeWordTest", "AudioRecord: captureSr=$captureSr bufSize=$bufSize")
                                 try {
                                     val recorder = AudioRecord(
-                                        MediaRecorder.AudioSource.MIC, sr,
+                                        MediaRecorder.AudioSource.MIC, captureSr,
                                         AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
-                                        bufSize * 2
+                                        maxOf(bufSize * 2, 16384)
                                     )
+                                    android.util.Log.i("WakeWordTest", "AudioRecord state: ${recorder.state} (1=initialized)")
                                     recorder.startRecording()
-                                    val buf = ShortArray(1280)
+                                    android.util.Log.i("WakeWordTest", "Recording started, recordingState=${recorder.recordingState}")
+                                    // Read 3840 samples at 48kHz = 80ms, downsample 3:1 to 1280 at 16kHz
+                                    val buf48 = ShortArray(3840)
+                                    var frameCount = 0
                                     while (isTesting) {
-                                        val read = recorder.read(buf, 0, buf.size)
-                                        if (read > 0) engine.processAudio(buf.copyOf(read))
+                                        val read = recorder.read(buf48, 0, buf48.size)
+                                        if (read > 0) {
+                                            frameCount++
+                                            // Downsample 48kHz to 16kHz (take every 3rd sample)
+                                            val buf16 = ShortArray(read / 3)
+                                            for (i in buf16.indices) buf16[i] = buf48[i * 3]
+
+                                            if (frameCount <= 5 || frameCount % 100 == 0) {
+                                                val rms = Math.sqrt(buf16.map { it.toDouble() * it.toDouble() }.average())
+                                                android.util.Log.d("WakeWordTest", "Frame $frameCount: read48=$read out16=${buf16.size} rms=${"%,.0f".format(rms)}")
+                                            }
+                                            engine.processAudio(buf16)
+                                        }
                                     }
                                     recorder.stop()
                                     recorder.release()
