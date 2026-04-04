@@ -2,6 +2,7 @@ package io.livekit.android.example.voiceassistant.ui
 
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -16,13 +17,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import io.livekit.android.renderer.TextureViewRenderer
-import io.livekit.android.room.track.VideoTrack
+import android.annotation.SuppressLint
+import android.view.ViewGroup
+import android.webkit.WebChromeClient
+import android.webkit.WebView
+import android.webkit.WebViewClient
 
 data class ChatMessage(
     val id: String,
@@ -37,11 +42,15 @@ enum class ConversationStatus {
     SPEAKING,
 }
 
+@SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun ConversationCard(
     messages: List<ChatMessage>,
     status: ConversationStatus,
-    avatarVideoTrack: VideoTrack? = null,
+    anamApiKey: String = "",
+    anamAvatarId: String = "",
+    anamEnabled: Boolean = false,
+    onClose: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val statusColor = Color(0xFF4CAF50) // Green
@@ -69,6 +78,13 @@ fun ConversationCard(
             .fillMaxHeight()
             .clip(RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp))
             .background(MaterialTheme.colorScheme.surface)
+            .pointerInput(Unit) {
+                detectHorizontalDragGestures { _, dragAmount ->
+                    if (dragAmount > 40) { // Swipe right to close
+                        onClose()
+                    }
+                }
+            }
             .padding(16.dp)
     ) {
         // Status header
@@ -97,12 +113,96 @@ fun ConversationCard(
             )
         }
 
-        // Avatar video (if available)
-        if (avatarVideoTrack != null) {
+        // Avatar WebView (Anam JS SDK)
+        if (anamEnabled && anamApiKey.isNotEmpty() && anamAvatarId.isNotEmpty()) {
+            val avatarHtml = remember(anamApiKey, anamAvatarId) {
+                """
+                <!DOCTYPE html>
+                <html><head>
+                <meta name="viewport" content="width=device-width,initial-scale=1">
+                <style>
+                    * { margin:0; padding:0; }
+                    body { background:#000; overflow:hidden; }
+                    video, #anamVideo { width:100%; height:100%; object-fit:cover; }
+                    audio { display:none; }
+                </style>
+                </head><body>
+                <video id="anamVideo" autoplay playsinline muted></video>
+                <audio id="anamAudio" autoplay></audio>
+                <script src="https://unpkg.com/@anam-ai/js-sdk@4.12.0/dist/umd/anam.js"></script>
+                <script>
+                    const { createClient } = window.anam;
+                    // Get session token with no brain (visual-only avatar)
+                    async function startAvatar() {
+                        try {
+                            const resp = await fetch('https://api.anam.ai/v1/auth/session-token', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                    'Authorization': 'Bearer ${anamApiKey}',
+                                },
+                                body: JSON.stringify({
+                                    personaConfig: {
+                                        name: 'Hermes',
+                                        avatarId: '${anamAvatarId}',
+                                        voiceId: '6bfbe25a-979d-40f3-a92b-5394170af54b',
+                                        llmId: 'CUSTOMER_CLIENT_V1',
+                                        systemPrompt: 'You are a visual avatar. Do not respond to user input.',
+                                    },
+                                }),
+                            });
+                            const data = await resp.json();
+                            const client = createClient(data.sessionToken, { disableClientAudio: true });
+                            await client.streamToVideoAndAudioElements('anamVideo', 'anamAudio');
+                            window.anamClient = client;
+                        } catch(e) {
+                            console.error('Avatar start failed:', e);
+                        }
+                    }
+                    startAvatar();
+                    // Expose talk() for Android to call
+                    window.anamTalk = function(text) {
+                        try { if(window.anamClient) window.anamClient.talk(text); } catch(e) { console.error('anamTalk error:', e); }
+                    };
+                </script>
+                </body></html>
+                """.trimIndent()
+            }
+
+            val webViewRef = remember { mutableStateOf<WebView?>(null) }
+
+            // When agent speaks, send text to avatar
+            val lastAgentMessage = messages.lastOrNull { !it.isUser }?.text
+            LaunchedEffect(lastAgentMessage) {
+                if (lastAgentMessage != null) {
+                    webViewRef.value?.evaluateJavascript(
+                        "if(window.anamTalk) window.anamTalk('" +
+                            lastAgentMessage.replace("'", "\\'").replace("\n", " ") +
+                            "');", null
+                    )
+                }
+            }
+
             AndroidView(
                 factory = { ctx ->
-                    TextureViewRenderer(ctx).apply {
-                        avatarVideoTrack.addRenderer(this)
+                    WebView(ctx).apply {
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        settings.mediaPlaybackRequiresUserGesture = false
+                        webViewClient = WebViewClient()
+                        webChromeClient = WebChromeClient()
+                        loadDataWithBaseURL(
+                            "https://api.anam.ai",
+                            avatarHtml,
+                            "text/html",
+                            "UTF-8",
+                            null
+                        )
+                        webViewRef.value = this
                     }
                 },
                 modifier = Modifier

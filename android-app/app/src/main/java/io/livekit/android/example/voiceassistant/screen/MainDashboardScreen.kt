@@ -455,7 +455,22 @@ fun MainDashboardScreen() {
                 ConversationCard(
                     messages = chatMessages,
                     status = conversationStatus,
-                    avatarVideoTrack = avatarVideoTrack,
+                    anamEnabled = anamEnabled,
+                    anamApiKey = anamApiKey,
+                    anamAvatarId = anamAvatarId,
+                    onClose = {
+                        scope.launch {
+                            // Signal server to end conversation
+                            try {
+                                val endSignal = JSONObject().put("type", "end_conversation")
+                                room.localParticipant.publishData(endSignal.toString().toByteArray())
+                            } catch (_: Exception) {}
+                            // Disable mic, restart wake word
+                            try { room.localParticipant.setMicrophoneEnabled(false) } catch (_: Exception) {}
+                            audioPipeline.start()
+                            voiceState = VoiceState.WAKE_WORD
+                        }
+                    },
                     modifier = Modifier
                         .width(chatCardWidth)
                         .fillMaxHeight()

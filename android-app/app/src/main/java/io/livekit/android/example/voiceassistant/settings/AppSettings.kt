@@ -56,7 +56,7 @@ class AppSettings(private val context: Context) {
         const val DEFAULT_LIVEKIT_URL = "ws://192.168.211.153:7880"
         const val DEFAULT_TOKEN_SERVER_URL = "http://192.168.211.153:8090"
         const val DEFAULT_ANAM_API_KEY = "OTg0MGVkMGUtYzQyNi00OThlLWI3ZWUtM2ZlZDI3YTk1NDNjOkIvakJtQUp2TUdFcTNtWUZDTGU3bENRa0thcTRxc1NFOWZ4dUpkaWN0cVE9"
-        const val DEFAULT_ANAM_AVATAR_ID = "30fa96d0-26c4-4e55-94a0-517025942e18"  // Cara (stock)
+        const val DEFAULT_ANAM_AVATAR_ID = "ef4729d7-7a5c-48a7-b58c-7b6e6423e834"  // Data (custom)
         const val DEFAULT_DEVICE_ID = ""
         const val DEFAULT_DEVICE_DISPLAY_NAME = ""
         const val DEFAULT_DEVICE_ROOM_LOCATION = ""
