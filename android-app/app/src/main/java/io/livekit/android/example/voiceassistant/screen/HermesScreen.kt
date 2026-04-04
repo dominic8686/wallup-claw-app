@@ -65,31 +65,14 @@ fun HermesScreen() {
             wakeWordManager.initialize("wakeword_models/jarvis_v2.onnx")
         }
 
-        // 2. Start audio pipeline FIRST (before LiveKit to own the mic)
+        // 2. Start audio pipeline (own the mic for wake word)
         audioPipeline.start()
         state = HermesState.WAKE_WORD
         statusText = "Say \"Hey Jarvis\"..."
+        Log.i("HermesScreen", "Audio pipeline started, wake word active")
 
-        // 3. Connect to LiveKit room
-        try {
-            val response = withContext(Dispatchers.IO) {
-                URL("$TOKEN_SERVER_URL/token?identity=android-user&room=voice-room").readText()
-            }
-            val json = JSONObject(response)
-            val token = json.getString("token")
-
-            room.connect(LIVEKIT_WS_URL, token)
-            roomConnected = true
-            Log.i("HermesScreen", "LiveKit room connected")
-
-            // DON'T enable LiveKit mic - it conflicts with our AudioRecord
-            // Audio will be sent via custom AudioSource (TODO)
-            Log.i("HermesScreen", "Room connected (mic managed by AudioPipeline)")
-        } catch (e: Exception) {
-            Log.e("HermesScreen", "LiveKit connect failed: ${e.message}")
-            // Continue without LiveKit — wake word still works
-            statusText = "Wake word active (no server)"
-        }
+        // 3. DON'T connect LiveKit yet - it interferes with AudioRecord
+        //    Will connect when wake word is detected
 
         // 4. Process wake word audio (convert ShortArray to ByteArray for WakeWordManager)
         launch(Dispatchers.Default) {
@@ -119,24 +102,49 @@ fun HermesScreen() {
                     state = HermesState.CONVERSATION
                     statusText = "Conversation active..."
 
-                    // Signal server agent to start conversation
-                    if (roomConnected) {
-                        try {
-                            val signal = "{\"type\":\"wake_word_detected\",\"score\":${"%.3f".format(score)}}"
-                            room.localParticipant.publishData(
-                                signal.toByteArray()
-                            )
-                            Log.i("HermesScreen", "Sent wake_word_detected to server")
-                        } catch (e: Exception) {
-                            Log.e("HermesScreen", "Failed to send signal: ${e.message}")
-                        }
-                    }
+                    // Launch connection in separate scope (not cancelled by collectLatest)
+                    scope.launch {
+                        // Stop our AudioRecord so LiveKit can take the mic
+                        audioPipeline.stop()
+                        Log.i("HermesScreen", "AudioPipeline stopped for LiveKit")
 
-                    // Auto-return to wake word after timeout
-                    delay(30000)
-                    if (state == HermesState.CONVERSATION) {
-                        state = HermesState.WAKE_WORD
-                        statusText = "Say \"Hey Jarvis\"..."
+                        // Connect to LiveKit and enable mic
+                        try {
+                            if (!roomConnected) {
+                                val response = withContext(Dispatchers.IO) {
+                                    URL("$TOKEN_SERVER_URL/token?identity=android-user&room=voice-room").readText()
+                                }
+                                val json = JSONObject(response)
+                                val token = json.getString("token")
+                                room.connect(LIVEKIT_WS_URL, token)
+                                roomConnected = true
+                                Log.i("HermesScreen", "LiveKit connected")
+                            }
+
+                            room.localParticipant.setMicrophoneEnabled(true)
+                            Log.i("HermesScreen", "LiveKit mic enabled")
+
+                            // Signal server agent
+                            val signal = "{\"type\":\"wake_word_detected\",\"score\":${"%.3f".format(score)}}"
+                            room.localParticipant.publishData(signal.toByteArray())
+                            Log.i("HermesScreen", "Sent wake_word_detected")
+                        } catch (e: Exception) {
+                            Log.e("HermesScreen", "LiveKit failed: ${e.message}")
+                        }
+
+                        // Auto-return to wake word after timeout
+                        delay(30000)
+                        if (state == HermesState.CONVERSATION) {
+                            try {
+                                room.localParticipant.setMicrophoneEnabled(false)
+                            } catch (_: Exception) {}
+                            room.disconnect()
+                            roomConnected = false
+                            audioPipeline.start()
+                            Log.i("HermesScreen", "Back to wake word mode")
+                            state = HermesState.WAKE_WORD
+                            statusText = "Say \"Hey Jarvis\"..."
+                        }
                     }
                 }
             }

@@ -618,12 +618,12 @@ async def main():
 
     # Listen for data messages from tablet (wake word signal)
     @room.on("data_received")
-    def on_data(data: bytes, participant, kind, topic):
+    def on_data(data: rtc.DataPacket):
         try:
-            msg = _json.loads(data.decode())
+            msg = _json.loads(data.data.decode())
             if msg.get("type") == "wake_word_detected":
                 score = msg.get("score", 0)
-                logger.info("Received wake_word_detected (score=%s) from %s", score, participant.identity if participant else "unknown")
+                logger.info("Received wake_word_detected (score=%s)", score)
                 if not agent_active:
                     asyncio.ensure_future(activate())
         except Exception as e:
