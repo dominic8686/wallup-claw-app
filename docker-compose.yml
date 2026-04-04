@@ -1,0 +1,38 @@
+services:
+  livekit-server:
+    image: livekit/livekit-server:latest
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882/udp"
+      - "50100-50120:50100-50120/udp"
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml
+    command: ["--config", "/etc/livekit.yaml"]
+    restart: unless-stopped
+
+  voice-agent:
+    build: ./agent
+    environment:
+      - LIVEKIT_URL=ws://livekit-server:7880
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
+      - ELEVEN_API_KEY=${ELEVENLABS_API_KEY}
+    depends_on:
+      - livekit-server
+    restart: unless-stopped
+
+  token-server:
+    build: ./token-server
+    ports:
+      - "8090:8090"
+    environment:
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
+      - LIVEKIT_URL=ws://livekit-server:7880
+      - LIVEKIT_EXTERNAL_URL=ws://192.168.211.55:7880
+    depends_on:
+      - livekit-server
+    restart: unless-stopped
