@@ -30,4 +30,4 @@ SERVICE_SET_DND = "set_dnd"
 SERVICE_CONFIGURE_DEVICE = "configure_device"
 
 # Platforms
-PLATFORMS = ["binary_sensor", "sensor", "switch"]
+PLATFORMS = ["binary_sensor", "sensor", "switch", "text"]
