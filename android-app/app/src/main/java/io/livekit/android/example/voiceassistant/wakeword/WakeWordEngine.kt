@@ -90,7 +90,8 @@ class OpenWakeWordEngine : WakeWordEngine {
     override fun processAudio(audioData: ShortArray): Float {
         if (!isInitialized) return 0f
 
-        for (s in audioData) audioBuffer.add(s.toFloat() / 32768f)
+        // IMPORTANT: mel model expects raw int16 values as float, NOT normalized to -1..1
+        for (s in audioData) audioBuffer.add(s.toFloat())
 
         var bestScore = 0f
 
@@ -103,9 +104,11 @@ class OpenWakeWordEngine : WakeWordEngine {
             melFeatures.add(mel)
             melFrameCount++
 
-            // Stage 2: Embedding (every MEL_STEP frames)
+                // Stage 2: Embedding (every MEL_STEP frames)
             if (melFeatures.size >= MEL_FRAMES_PER_EMBEDDING && melFrameCount % MEL_STEP == 0) {
+                if (melFrameCount <= 80) Log.d(TAG, "Running embedding (melFrames=${melFeatures.size}, count=$melFrameCount)")
                 val emb = runEmbedding(melFeatures.takeLast(MEL_FRAMES_PER_EMBEDDING)) ?: continue
+                if (embeddings.size < 20) Log.d(TAG, "Embedding: ${emb.size} dims, first=${emb.firstOrNull()}")
                 embeddings.add(emb)
                 if (embeddings.size > EMBEDDINGS_PER_DETECTION) embeddings.removeFirst()
 
@@ -131,20 +134,56 @@ class OpenWakeWordEngine : WakeWordEngine {
     private fun runMel(pcm: FloatArray): FloatArray? = try {
         val t = OnnxTensor.createTensor(ortEnv, FloatBuffer.wrap(pcm), longArrayOf(1, pcm.size.toLong()))
         val r = melSession!!.run(mapOf(melSession!!.inputNames.first() to t))
-        // Output: [1, 1, N, 32] - take last frame's 32 mel bins
-        @Suppress("UNCHECKED_CAST")
-        val out = (r[0].value as? Array<Array<Array<FloatArray>>>)?.get(0)?.get(0)?.lastOrNull()
-        t.close(); r.close(); out
+        val raw = r[0].value
+        if (melFrameCount <= 3) Log.d(TAG, "Mel output type: ${raw?.javaClass?.name}")
+
+        // openWakeWord mel output is typically [1, 1, N, 32]
+        // But could also be float[][] or float[][][] depending on version
+        val out: FloatArray? = when (raw) {
+            is Array<*> -> {
+                try {
+                    @Suppress("UNCHECKED_CAST")
+                    (raw as Array<Array<Array<FloatArray>>>)[0][0].lastOrNull()
+                } catch (_: Exception) {
+                    try {
+                        @Suppress("UNCHECKED_CAST")
+                        (raw as Array<Array<FloatArray>>)[0].lastOrNull()
+                    } catch (_: Exception) {
+                        @Suppress("UNCHECKED_CAST")
+                        (raw as? Array<FloatArray>)?.lastOrNull()
+                    }
+                }
+            }
+            is FloatArray -> raw
+            else -> null
+        }
+
+        // Apply openWakeWord normalization: value / 10.0 + 2.0
+        val normalized = out?.map { (it / 10f) + 2f }?.toFloatArray()
+        if (melFrameCount <= 3) Log.d(TAG, "Mel result: ${normalized?.size ?: "null"} bins")
+        t.close(); r.close(); normalized
     } catch (e: Exception) { Log.e(TAG, "Mel err: ${e.message}"); null }
 
     private fun runEmbedding(mels: List<FloatArray>): FloatArray? = try {
         val n = mels.size; val bins = mels[0].size
         val flat = FloatArray(n * bins)
         mels.forEachIndexed { i, m -> System.arraycopy(m, 0, flat, i * bins, bins) }
-        val t = OnnxTensor.createTensor(ortEnv, FloatBuffer.wrap(flat), longArrayOf(1, 1, n.toLong(), bins.toLong()))
+        val t = OnnxTensor.createTensor(ortEnv, FloatBuffer.wrap(flat), longArrayOf(1, n.toLong(), bins.toLong(), 1))
         val r = embSession!!.run(mapOf(embSession!!.inputNames.first() to t))
-        @Suppress("UNCHECKED_CAST")
-        val out = (r[0].value as? Array<FloatArray>)?.get(0) ?: (r[0].value as? FloatArray)
+        // Output: [batch, 1, 1, 96]
+        val raw = r[0].value
+        val out: FloatArray? = try {
+            @Suppress("UNCHECKED_CAST")
+            (raw as Array<Array<Array<FloatArray>>>)[0][0][0]
+        } catch (_: Exception) {
+            try {
+                @Suppress("UNCHECKED_CAST")
+                (raw as Array<Array<FloatArray>>)[0][0]
+            } catch (_: Exception) {
+                @Suppress("UNCHECKED_CAST")
+                (raw as? Array<FloatArray>)?.get(0) ?: (raw as? FloatArray)
+            }
+        }
         t.close(); r.close(); out
     } catch (e: Exception) { Log.e(TAG, "Emb err: ${e.message}"); null }
 
@@ -152,7 +191,8 @@ class OpenWakeWordEngine : WakeWordEngine {
         val n = embs.size; val sz = embs[0].size
         val flat = FloatArray(n * sz)
         embs.forEachIndexed { i, e -> System.arraycopy(e, 0, flat, i * sz, sz) }
-        val t = OnnxTensor.createTensor(ortEnv, FloatBuffer.wrap(flat), longArrayOf(1, flat.size.toLong()))
+        // Shape: [1, 16, 96] — 3D, not flattened
+        val t = OnnxTensor.createTensor(ortEnv, FloatBuffer.wrap(flat), longArrayOf(1, n.toLong(), sz.toLong()))
         val r = wwSession!!.run(mapOf(wwSession!!.inputNames.first() to t))
         @Suppress("UNCHECKED_CAST")
         val score = (r[0].value as? Array<FloatArray>)?.get(0)?.get(0)
