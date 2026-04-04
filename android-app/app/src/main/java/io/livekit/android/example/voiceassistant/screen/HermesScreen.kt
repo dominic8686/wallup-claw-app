@@ -132,16 +132,13 @@ fun HermesScreen() {
                             Log.e("HermesScreen", "LiveKit failed: ${e.message}")
                         }
 
-                        // Auto-return to wake word after timeout
-                        delay(30000)
+                        // Max 5 min timeout (server signals conversation_ended sooner)
+                        delay(300000)
                         if (state == HermesState.CONVERSATION) {
-                            try {
-                                room.localParticipant.setMicrophoneEnabled(false)
-                            } catch (_: Exception) {}
-                            room.disconnect()
-                            roomConnected = false
+                            try { room.localParticipant.setMicrophoneEnabled(false) } catch (_: Exception) {}
+                            try { room.disconnect(); roomConnected = false } catch (_: Exception) {}
                             audioPipeline.start()
-                            Log.i("HermesScreen", "Back to wake word mode")
+                            Log.i("HermesScreen", "Max timeout, back to wake word")
                             state = HermesState.WAKE_WORD
                             statusText = "Say \"Hey Jarvis\"..."
                         }
@@ -150,11 +147,8 @@ fun HermesScreen() {
             }
         }
 
-        // 7. Listen for server data messages
-        launch {
-            // TODO: Listen for conversation_ended from server
-            // room.events.collect { event -> ... }
-        }
+        // 7. (Server-driven conversation end handled via data messages in future)
+        // For now, the 30s silence timeout on the server + 5min max on tablet handles it
     }
 
     // Cleanup
