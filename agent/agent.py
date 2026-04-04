@@ -127,6 +127,7 @@ class HermesChat:
             self._agent = AIAgent(
                 model=os.environ.get("HERMES_MODEL", "gpt-4o-mini"),
                 quiet_mode=True,
+                enabled_toolsets=["web", "homeassistant", "memory", "terminal"],
             )
             self._history = []
             logger.info("HermesChat initialized with AIAgent")
