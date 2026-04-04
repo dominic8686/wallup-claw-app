@@ -195,6 +195,19 @@ fun SettingsScreen(onBack: () -> Unit) {
                                         AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
                                         bufSize * 2
                                     )
+                                    // Attach audio effects BEFORE startRecording (keeps HAL alive on Rockchip)
+                                    try {
+                                        if (android.media.audiofx.AcousticEchoCanceler.isAvailable()) {
+                                            android.media.audiofx.AcousticEchoCanceler.create(recorder.audioSessionId)?.apply { enabled = true }
+                                            android.util.Log.i("WakeWordTest", "AEC enabled")
+                                        }
+                                        if (android.media.audiofx.NoiseSuppressor.isAvailable()) {
+                                            android.media.audiofx.NoiseSuppressor.create(recorder.audioSessionId)?.apply { enabled = true }
+                                            android.util.Log.i("WakeWordTest", "NS enabled")
+                                        }
+                                    } catch (e: Exception) {
+                                        android.util.Log.w("WakeWordTest", "Audio effects not available: ${e.message}")
+                                    }
                                     recorder.startRecording()
                                     android.util.Log.i("WakeWordTest", "Capture started (IO thread)")
                                     val byteBuffer = ByteArray(4096)
