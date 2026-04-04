@@ -2,6 +2,8 @@ package io.livekit.android.example.voiceassistant.screen
 
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.*
@@ -42,6 +44,11 @@ fun IncomingCallOverlay(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = {} // consume touches so WebView underneath doesn't steal them
+            )
             .background(Color.Black.copy(alpha = 0.85f)),
         contentAlignment = Alignment.Center,
     ) {
@@ -83,26 +90,11 @@ fun IncomingCallOverlay(
 
             Spacer(Modifier.height(48.dp))
 
-            // Accept / Decline buttons
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(64.dp),
-                verticalAlignment = Alignment.CenterVertically,
+            // Accept / Decline buttons — stacked vertically to fit narrow panel
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(24.dp),
             ) {
-                // Decline
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Button(
-                        onClick = onDecline,
-                        shape = CircleShape,
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF44336)),
-                        contentPadding = PaddingValues(20.dp),
-                        modifier = Modifier.size(72.dp),
-                    ) {
-                        Text("✕", fontSize = 28.sp, color = Color.White)
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Text("Decline", color = Color.White.copy(alpha = 0.7f), fontSize = 14.sp)
-                }
-
                 // Accept
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Button(
@@ -116,6 +108,21 @@ fun IncomingCallOverlay(
                     }
                     Spacer(Modifier.height(8.dp))
                     Text("Accept", color = Color.White.copy(alpha = 0.7f), fontSize = 14.sp)
+                }
+
+                // Decline
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Button(
+                        onClick = onDecline,
+                        shape = CircleShape,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF44336)),
+                        contentPadding = PaddingValues(20.dp),
+                        modifier = Modifier.size(72.dp),
+                    ) {
+                        Text("✕", fontSize = 28.sp, color = Color.White)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text("Decline", color = Color.White.copy(alpha = 0.7f), fontSize = 14.sp)
                 }
             }
         }

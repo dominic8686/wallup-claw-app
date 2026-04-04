@@ -27,6 +27,7 @@ SERVICE_BROADCAST = "broadcast"
 SERVICE_HANGUP = "hangup"
 SERVICE_ANSWER = "answer"
 SERVICE_SET_DND = "set_dnd"
+SERVICE_CONFIGURE_DEVICE = "configure_device"
 
 # Platforms
 PLATFORMS = ["binary_sensor", "sensor", "switch"]

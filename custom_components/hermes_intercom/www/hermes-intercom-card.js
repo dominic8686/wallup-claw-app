@@ -38,6 +38,10 @@ class HermesIntercomCard extends HTMLElement {
             </button>
           </div>
           <div id="call-log" style="margin-top:16px;"></div>
+          <div id="quick-call-bar" style="margin-top:16px;padding-top:14px;border-top:1px solid #e0e0e0;">
+            <div style="font-size:12px;color:#888;margin-bottom:10px;text-transform:uppercase;letter-spacing:0.5px;">Quick Call</div>
+            <div id="quick-call-icons" style="display:flex;flex-wrap:wrap;gap:14px;justify-content:center;"></div>
+          </div>
         </div>
       </ha-card>
     `;
@@ -45,6 +49,14 @@ class HermesIntercomCard extends HTMLElement {
     this.querySelector("#announce-btn").addEventListener("click", () => this._sendAnnounce());
     this.querySelector("#announce-input").addEventListener("keydown", (e) => {
       if (e.key === "Enter") this._sendAnnounce();
+    });
+
+    // Event delegation for all call buttons (inline onclick won't work without Shadow DOM)
+    this.addEventListener("click", (e) => {
+      const callBtn = e.target.closest("[data-call-device]");
+      if (callBtn) {
+        this._callDevice(callBtn.dataset.callDevice);
+      }
     });
 
     this._devices = [];
@@ -100,12 +112,48 @@ class HermesIntercomCard extends HTMLElement {
             </div>
           </div>
           ${canCall ? `
-            <button data-device="${d.device_id}"
-              style="padding:6px 12px;background:#4CAF50;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:18px;"
-              onclick="this.getRootNode().host._callDevice('${d.device_id}')">
+            <button data-call-device="${d.device_id}"
+              style="padding:6px 12px;background:#4CAF50;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:18px;">
               📞
             </button>
           ` : ""}
+        </div>
+      `;
+    }).join("");
+
+    this._renderQuickCallBar();
+  }
+
+  _renderQuickCallBar() {
+    const bar = this.querySelector("#quick-call-icons");
+    if (!bar) return;
+
+    const roomIcons = {
+      kitchen: "🍳", bedroom: "🛌", living: "🛋️", office: "💻",
+      bathroom: "🚿", garage: "🚗", kids: "🧸", nursery: "👶",
+      basement: "🏠", attic: "🏚️", patio: "☀️", garden: "🌿",
+    };
+
+    bar.innerHTML = this._devices.map(d => {
+      const isOnline = d.status === "online";
+      const canCall = isOnline && d.call_state === "idle";
+      const opacity = canCall ? "1" : "0.35";
+      const cursor = canCall ? "pointer" : "default";
+      const location = (d.room_location || "").toLowerCase();
+      const icon = Object.entries(roomIcons).find(([k]) => location.includes(k))?.[1] || "📱";
+      const label = d.display_name || d.device_id;
+      const borderColor = canCall ? "#4CAF50" : "#ccc";
+
+      return `
+        <div class="quick-call-icon" ${canCall ? `data-call-device="${d.device_id}"` : ""}
+          style="display:flex;flex-direction:column;align-items:center;gap:4px;opacity:${opacity};cursor:${cursor};">
+          <div style="width:52px;height:52px;border-radius:50%;background:#f5f5f5;border:2px solid ${borderColor};
+            display:flex;align-items:center;justify-content:center;font-size:24px;transition:all 0.2s;">
+            ${icon}
+          </div>
+          <span style="font-size:11px;color:#666;max-width:64px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;">
+            ${label}
+          </span>
         </div>
       `;
     }).join("");

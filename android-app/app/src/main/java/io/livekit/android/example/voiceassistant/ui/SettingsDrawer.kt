@@ -42,6 +42,9 @@ fun SettingsDrawer(
     val anamEnabled by settings.anamEnabled.collectAsState(initial = false)
     val anamApiKey by settings.anamApiKey.collectAsState(initial = "")
     val anamAvatarId by settings.anamAvatarId.collectAsState(initial = "")
+    val deviceId by settings.deviceId.collectAsState(initial = AppSettings.DEFAULT_DEVICE_ID)
+    val deviceDisplayName by settings.deviceDisplayName.collectAsState(initial = AppSettings.DEFAULT_DEVICE_DISPLAY_NAME)
+    val deviceRoomLocation by settings.deviceRoomLocation.collectAsState(initial = AppSettings.DEFAULT_DEVICE_ROOM_LOCATION)
 
     // Scrim + drawer
     if (visible) {
@@ -89,6 +92,59 @@ fun SettingsDrawer(
                         Text("✕", fontSize = 20.sp)
                     }
                 }
+
+                HorizontalDivider()
+
+                // Device Identity
+                Text("Device Identity", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+
+                var deviceIdEdit by remember(deviceId) { mutableStateOf(deviceId) }
+                OutlinedTextField(
+                    value = deviceIdEdit,
+                    onValueChange = { deviceIdEdit = it },
+                    label = { Text("Device ID") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    trailingIcon = {
+                        if (deviceIdEdit != deviceId) {
+                            TextButton(onClick = {
+                                scope.launch { settings.setDeviceId(deviceIdEdit) }
+                            }) { Text("Save") }
+                        }
+                    }
+                )
+
+                var displayNameEdit by remember(deviceDisplayName) { mutableStateOf(deviceDisplayName) }
+                OutlinedTextField(
+                    value = displayNameEdit,
+                    onValueChange = { displayNameEdit = it },
+                    label = { Text("Tablet Name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    trailingIcon = {
+                        if (displayNameEdit != deviceDisplayName) {
+                            TextButton(onClick = {
+                                scope.launch { settings.setDeviceDisplayName(displayNameEdit) }
+                            }) { Text("Save") }
+                        }
+                    }
+                )
+
+                var roomEdit by remember(deviceRoomLocation) { mutableStateOf(deviceRoomLocation) }
+                OutlinedTextField(
+                    value = roomEdit,
+                    onValueChange = { roomEdit = it },
+                    label = { Text("Room Location") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    trailingIcon = {
+                        if (roomEdit != deviceRoomLocation) {
+                            TextButton(onClick = {
+                                scope.launch { settings.setDeviceRoomLocation(roomEdit) }
+                            }) { Text("Save") }
+                        }
+                    }
+                )
 
                 HorizontalDivider()
 
