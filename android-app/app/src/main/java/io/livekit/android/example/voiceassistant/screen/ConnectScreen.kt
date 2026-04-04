@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -56,14 +57,35 @@ object ConnectRoute
 
 @Composable
 fun ConnectScreen(
-    navigateToVoiceAssistant: (VoiceAssistantRoute) -> Unit
+    navigateToVoiceAssistant: (VoiceAssistantRoute) -> Unit,
+    navigateToSettings: () -> Unit = {},
 ) {
     Box(
-        contentAlignment = Alignment.Center,
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
+        // Settings gear icon in top-right
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(16.dp)
+        ) {
+            Button(
+                onClick = navigateToSettings,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color.Transparent,
+                    contentColor = MaterialTheme.colorScheme.onBackground
+                )
+            ) {
+                Text("⚙", fontSize = 24.sp)
+            }
+        }
+
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.fillMaxSize()
+        ) {
 
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Image(painter = painterResource(R.drawable.connect_icon), contentDescription = "Connect icon")
@@ -165,5 +187,6 @@ fun ConnectScreen(
                 }
             }
         }
+        } // inner Box
     }
 }
