@@ -3,6 +3,7 @@ package io.livekit.android.example.voiceassistant.screen
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -10,8 +11,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.livekit.android.example.voiceassistant.settings.*
+import io.livekit.android.example.voiceassistant.wakeword.OpenWakeWordEngine
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
 
 @Serializable
 object SettingsRoute
@@ -136,6 +142,84 @@ fun SettingsScreen(onBack: () -> Unit) {
                     Text("Low", fontSize = 12.sp)
                     Text("%.1f".format(sensitivity), fontWeight = FontWeight.Bold)
                     Text("High", fontSize = 12.sp)
+                }
+            }
+            HorizontalDivider()
+
+            // Live Wake Word Test
+            Text("Test Wake Word", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+
+            var isTesting by remember { mutableStateOf(false) }
+            var currentScore by remember { mutableFloatStateOf(0f) }
+
+            Column {
+                // Score bar
+                LinearProgressIndicator(
+                    progress = { currentScore.coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth().height(24.dp),
+                    color = if (currentScore >= sensitivity) Color(0xFF4CAF50) else Color(0xFFFF5722),
+                    trackColor = Color(0xFFE0E0E0),
+                )
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("Score: ${"%05.3f".format(currentScore)}", fontWeight = FontWeight.Bold)
+                    Text(
+                        if (currentScore >= sensitivity) "DETECTED" else "listening...",
+                        color = if (currentScore >= sensitivity) Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = if (currentScore >= sensitivity) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                Button(
+                    onClick = {
+                        if (isTesting) {
+                            isTesting = false
+                        } else {
+                            isTesting = true
+                            val modelInfo = BUNDLED_MODELS.find { it.id == selectedModel } ?: BUNDLED_MODELS.first()
+                            scope.launch(Dispatchers.Default) {
+                                val engine = OpenWakeWordEngine()
+                                engine.onScoreUpdate = { score -> currentScore = score }
+                                engine.initialize(context, modelInfo.assetPath, sensitivity)
+                                if (!engine.isInitialized) {
+                                    isTesting = false
+                                    return@launch
+                                }
+
+                                val sr = 16000
+                                val bufSize = AudioRecord.getMinBufferSize(sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+                                try {
+                                    val recorder = AudioRecord(
+                                        MediaRecorder.AudioSource.MIC, sr,
+                                        AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
+                                        bufSize * 2
+                                    )
+                                    recorder.startRecording()
+                                    val buf = ShortArray(1280)
+                                    while (isTesting) {
+                                        val read = recorder.read(buf, 0, buf.size)
+                                        if (read > 0) engine.processAudio(buf.copyOf(read))
+                                    }
+                                    recorder.stop()
+                                    recorder.release()
+                                } catch (e: SecurityException) {
+                                    // Mic permission not granted
+                                }
+                                engine.release()
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isTesting) Color(0xFFFF5722) else MaterialTheme.colorScheme.primary
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (isTesting) "STOP TEST" else "START TEST")
                 }
             }
         }
