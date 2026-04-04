@@ -16,6 +16,8 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -28,15 +30,22 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import io.livekit.android.LiveKit
 import io.livekit.android.annotations.Beta
+import io.livekit.android.compose.types.TrackReference
 import io.livekit.android.events.RoomEvent
 import io.livekit.android.events.collect
+import io.livekit.android.room.track.Track
+import io.livekit.android.room.track.VideoTrack
 import io.livekit.android.example.voiceassistant.audio.AudioPipelineManager
 import io.livekit.android.example.voiceassistant.audio.WakeWordManager
+import io.livekit.android.example.voiceassistant.intercom.IntercomManager
+import io.livekit.android.example.voiceassistant.intercom.IntercomState
 import io.livekit.android.example.voiceassistant.settings.AppSettings
 import io.livekit.android.example.voiceassistant.ui.*
 import io.livekit.android.example.voiceassistant.util.HomeAssistantDetector
 import kotlinx.coroutines.*
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collectLatest
+import androidx.compose.runtime.snapshotFlow
 import kotlinx.serialization.Serializable
 import org.json.JSONObject
 import java.net.URL
@@ -67,7 +76,7 @@ fun MainDashboardScreen() {
     val anamEnabled by appSettings.anamEnabled.collectAsState(initial = false)
     val anamApiKey by appSettings.anamApiKey.collectAsState(initial = "")
     val anamAvatarId by appSettings.anamAvatarId.collectAsState(initial = "")
-    val deviceId by appSettings.deviceId.collectAsState(initial = AppSettings.DEFAULT_DEVICE_ID)
+    val deviceId by appSettings.deviceId.collectAsState(initial = "__LOADING__")
     val deviceDisplayName by appSettings.deviceDisplayName.collectAsState(initial = AppSettings.DEFAULT_DEVICE_DISPLAY_NAME)
     val deviceRoomLocation by appSettings.deviceRoomLocation.collectAsState(initial = AppSettings.DEFAULT_DEVICE_ROOM_LOCATION)
 
@@ -84,6 +93,9 @@ fun MainDashboardScreen() {
 
     // --- Settings drawer ---
     var settingsVisible by remember { mutableStateOf(false) }
+
+    // --- Contacts panel (left side) ---
+    var contactsVisible by remember { mutableStateOf(false) }
 
     // --- Audio/LiveKit ---
     val audioPipeline = remember { AudioPipelineManager() }
@@ -124,11 +136,96 @@ fun MainDashboardScreen() {
         }
     }
 
-    // --- Resolve effective device identity (fall back to "android-user" if not set) ---
-    val effectiveDeviceId = if (deviceId.isNotEmpty()) deviceId else "android-user"
+    // --- Resolve effective device identity (auto-generate if not set) ---
+    LaunchedEffect(deviceId) {
+        if (deviceId == "__LOADING__") return@LaunchedEffect // DataStore still loading
+        if (deviceId.isEmpty()) {
+            val generated = "tablet-" + java.util.UUID.randomUUID().toString().take(8)
+            appSettings.setDeviceId(generated)
+            Log.i(TAG, "Auto-generated device ID: $generated")
+        }
+    }
+    val effectiveDeviceId = when {
+        deviceId == "__LOADING__" || deviceId.isEmpty() -> "tablet-pending"
+        else -> deviceId
+    }
+
+    // --- Intercom ---
+    val intercomManager = remember(tokenServerUrl, effectiveDeviceId) {
+        IntercomManager(tokenServerUrl, effectiveDeviceId)
+    }
+    val intercomState by intercomManager.state.collectAsState()
+    val currentCall by intercomManager.currentCall.collectAsState()
+    val isCallActive = intercomState == IntercomState.RINGING || intercomState == IntercomState.IN_CALL || intercomState == IntercomState.CALLING
+    val showLeftPanel = contactsVisible || isCallActive
+    val showRightPanel = isConversation
+
+    // --- Call room state (separate from voice-room) ---
+    var callRoom by remember { mutableStateOf<io.livekit.android.room.Room?>(null) }
+    var remoteVideoTrack by remember { mutableStateOf<VideoTrack?>(null) }
+    var localVideoTrack by remember { mutableStateOf<VideoTrack?>(null) }
+
+    // --- Auto-join call room when CALLING/IN_CALL and not yet connected ---
+    LaunchedEffect(effectiveDeviceId, intercomManager) {
+        snapshotFlow { Triple(intercomState, currentCall, callRoom) }.collect { (state, call, room) ->
+            if ((state == IntercomState.IN_CALL || state == IntercomState.CALLING) && call != null && room == null) {
+                Log.i(TAG, "$state state detected, joining room: ${call.roomName} (outgoing=${call.isOutgoing})")
+                try {
+                    val cr = LiveKit.create(context)
+                    val tokenResp = withContext(Dispatchers.IO) {
+                        URL("$tokenServerUrl/token?identity=$effectiveDeviceId&room=${call.roomName}").readText()
+                    }
+                    val tokenJson = JSONObject(tokenResp)
+                    cr.connect(livekitUrl, tokenJson.getString("token"))
+                    cr.localParticipant.setMicrophoneEnabled(true)
+                    try {
+                        cr.localParticipant.setCameraEnabled(true)
+                    } catch (camErr: Exception) {
+                        Log.w(TAG, "Camera not available: ${camErr.message}")
+                    }
+                    callRoom = cr
+                    Log.i(TAG, "Joined call room: ${call.roomName} (outgoing=${call.isOutgoing})")
+                    // Listen for remote tracks in outer scope so it survives snapshotFlow re-emissions
+                    scope.launch {
+                        cr.events.collect { event ->
+                            when (event) {
+                                is RoomEvent.TrackSubscribed -> {
+                                    if (event.track is VideoTrack) {
+                                        remoteVideoTrack = event.track as VideoTrack
+                                        Log.i(TAG, "Call: remote video subscribed")
+                                    }
+                                }
+                                is RoomEvent.TrackUnsubscribed -> {
+                                    if (event.track is VideoTrack) {
+                                        remoteVideoTrack = null
+                                    }
+                                }
+                                else -> {}
+                            }
+                        }
+                    }
+                    val localCamPub = cr.localParticipant.getTrackPublication(Track.Source.CAMERA)
+                    localVideoTrack = localCamPub?.track as? VideoTrack
+                    // Check for already-published remote video tracks
+                    for (participant in cr.remoteParticipants.values) {
+                        val videoPub = participant.getTrackPublication(Track.Source.CAMERA)
+                        val track = videoPub?.track
+                        if (track is VideoTrack) {
+                            remoteVideoTrack = track
+                            Log.i(TAG, "Call: found existing remote video from ${participant.identity}")
+                            break
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to join call room: ${e.message}")
+                }
+            }
+        }
+    }
 
     // --- Register device & connect to LiveKit ---
     LaunchedEffect(effectiveDeviceId) {
+        if (effectiveDeviceId == "tablet-pending") return@LaunchedEffect
         // Register with token server
         try {
             val regBody = JSONObject().apply {
@@ -165,8 +262,16 @@ fun MainDashboardScreen() {
         }
     }
 
-    // --- Background heartbeat every 15s ---
+    // --- Start intercom signal polling ---
+    LaunchedEffect(intercomManager) {
+        if (effectiveDeviceId == "tablet-pending") return@LaunchedEffect
+        intercomManager.start()
+        Log.i(TAG, "IntercomManager signal polling started")
+    }
+
+    // --- Background heartbeat every 15s + config polling ---
     LaunchedEffect(effectiveDeviceId) {
+        if (effectiveDeviceId == "tablet-pending") return@LaunchedEffect
         while (true) {
             delay(15_000)
             try {
@@ -184,6 +289,27 @@ fun MainDashboardScreen() {
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Heartbeat failed: ${e.message}")
+            }
+
+            // Poll for pending config from HA
+            try {
+                val configResp = withContext(Dispatchers.IO) {
+                    URL("$tokenServerUrl/configure?device_id=$effectiveDeviceId").readText()
+                }
+                val configJson = JSONObject(configResp)
+                val config = configJson.optJSONObject("config")
+                if (config != null) {
+                    if (config.has("display_name")) {
+                        appSettings.setDeviceDisplayName(config.getString("display_name"))
+                        Log.i(TAG, "Remote config: display_name = ${config.getString("display_name")}")
+                    }
+                    if (config.has("room_location")) {
+                        appSettings.setDeviceRoomLocation(config.getString("room_location"))
+                        Log.i(TAG, "Remote config: room_location = ${config.getString("room_location")}")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Config poll failed: ${e.message}")
             }
         }
     }
@@ -353,6 +479,8 @@ fun MainDashboardScreen() {
     // Cleanup
     DisposableEffect(Unit) {
         onDispose {
+            intercomManager.stop()
+            intercomManager.release()
             audioPipeline.stop()
             wakeWordManager.release()
             room.disconnect()
@@ -360,11 +488,13 @@ fun MainDashboardScreen() {
         }
     }
 
-    // --- Swipe gesture detection for settings ---
+    // --- Swipe gesture detection: right = contacts, left = settings ---
     val swipeModifier = Modifier.pointerInput(Unit) {
         detectHorizontalDragGestures { _, dragAmount ->
-            if (dragAmount < -30) { // Swipe left
+            if (dragAmount < -30) { // Swipe left → settings
                 settingsVisible = true
+            } else if (dragAmount > 30) { // Swipe right → contacts
+                contactsVisible = true
             }
         }
     }
@@ -373,18 +503,137 @@ fun MainDashboardScreen() {
     Box(modifier = Modifier.fillMaxSize().then(swipeModifier)) {
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val chatCardWidth = maxWidth / 3
+            val leftPanelWidth = maxWidth / 3
             val webViewWidth by animateDpAsState(
-                targetValue = if (isConversation) maxWidth - chatCardWidth else maxWidth,
+                targetValue = when {
+                    showLeftPanel && showRightPanel -> maxWidth - chatCardWidth - leftPanelWidth
+                    showLeftPanel -> maxWidth - leftPanelWidth
+                    showRightPanel -> maxWidth - chatCardWidth
+                    else -> maxWidth
+                },
                 animationSpec = tween(durationMillis = 300),
                 label = "webViewWidth"
             )
+            val webViewStartPadding by animateDpAsState(
+                targetValue = if (showLeftPanel) leftPanelWidth else 0.dp,
+                animationSpec = tween(durationMillis = 300),
+                label = "webViewStartPadding"
+            )
 
-            // Home Assistant WebView — left-aligned, animated width
+            // Left panel — Contacts + Call UI, slides in from the left
+            AnimatedVisibility(
+                visible = showLeftPanel,
+                modifier = Modifier.align(Alignment.CenterStart),
+                enter = slideInHorizontally(initialOffsetX = { -it }) + fadeIn(),
+                exit = slideOutHorizontally(targetOffsetX = { -it }) + fadeOut(),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(leftPanelWidth)
+                        .fillMaxHeight()
+                ) {
+                    when {
+                        // Incoming call ringing
+                        intercomState == IntercomState.RINGING && currentCall != null -> {
+                            val call = currentCall!!
+                            IncomingCallOverlay(
+                                callInfo = IncomingCallInfo(
+                                    callId = call.callId,
+                                    fromDeviceId = call.remoteDeviceId,
+                                    fromDisplayName = call.remoteDisplayName,
+                                    roomName = call.roomName,
+                                ),
+                                onAccept = {
+                                    scope.launch {
+                                        intercomManager.acceptCall()
+                                        // snapshotFlow will detect IN_CALL state and join the room
+                                    }
+                                },
+                                onDecline = {
+                                    scope.launch { intercomManager.declineCall() }
+                                },
+                            )
+                        }
+                        // Active call
+                        intercomState == IntercomState.IN_CALL && currentCall != null -> {
+                            val call = currentCall!!
+                            ActiveCallScreen(
+                                callInfo = ActiveCallInfo(
+                                    callId = call.callId,
+                                    remoteDeviceId = call.remoteDeviceId,
+                                    remoteDisplayName = call.remoteDisplayName,
+                                    roomName = call.roomName,
+                                ),
+                                onHangup = {
+                                    scope.launch {
+                                        intercomManager.hangup()
+                                        callRoom?.disconnect()
+                                        callRoom?.release()
+                                        callRoom = null
+                                        remoteVideoTrack = null
+                                        localVideoTrack = null
+                                        Log.i(TAG, "Call ended, room cleaned up")
+                                    }
+                                },
+                                remoteVideoTrack = remoteVideoTrack,
+                                localVideoTrack = localVideoTrack,
+                            )
+                        }
+                        // Outgoing call (waiting for answer)
+                        intercomState == IntercomState.CALLING && currentCall != null -> {
+                            val call = currentCall!!
+                            ActiveCallScreen(
+                                callInfo = ActiveCallInfo(
+                                    callId = call.callId,
+                                    remoteDeviceId = call.remoteDeviceId,
+                                    remoteDisplayName = call.remoteDisplayName,
+                                    roomName = call.roomName,
+                                ),
+                                onHangup = {
+                                    scope.launch {
+                                        intercomManager.hangup()
+                                        callRoom?.disconnect()
+                                        callRoom?.release()
+                                        callRoom = null
+                                        remoteVideoTrack = null
+                                        localVideoTrack = null
+                                        Log.i(TAG, "Outgoing call cancelled")
+                                    }
+                                },
+                                remoteVideoTrack = remoteVideoTrack,
+                                localVideoTrack = localVideoTrack,
+                            )
+                        }
+                        // Contacts list (default when panel is open)
+                        else -> {
+                            ContactsPanel(
+                                tokenServerUrl = tokenServerUrl,
+                                myDeviceId = effectiveDeviceId,
+                                onCallDevice = { targetId ->
+                                    scope.launch {
+                                        val result = intercomManager.callDevice(targetId)
+                                        if (result.isSuccess) {
+                                            Log.i(TAG, "Call initiated to $targetId")
+                                            // LaunchedEffect will handle room joining when state changes to CALLING
+                                        } else {
+                                            Log.e(TAG, "Call to $targetId failed")
+                                        }
+                                    }
+                                },
+                                onClose = { contactsVisible = false },
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Home Assistant WebView — padded to make room for left panel
             Box(
                 modifier = Modifier
-                    .width(webViewWidth)
                     .fillMaxHeight()
-                    .align(Alignment.CenterStart)
+                    .padding(start = webViewStartPadding)
+                    .width(webViewWidth)
             ) {
                 if (haResolvedUrl != null) {
                     AndroidView(
@@ -447,7 +696,7 @@ fun MainDashboardScreen() {
 
             // Conversation Chat Card — right-aligned, slides in
             AnimatedVisibility(
-                visible = isConversation,
+                visible = showRightPanel,
                 modifier = Modifier.align(Alignment.CenterEnd),
                 enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
                 exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(),
@@ -460,12 +709,10 @@ fun MainDashboardScreen() {
                     anamAvatarId = anamAvatarId,
                     onClose = {
                         scope.launch {
-                            // Signal server to end conversation
                             try {
                                 val endSignal = JSONObject().put("type", "end_conversation")
                                 room.localParticipant.publishData(endSignal.toString().toByteArray())
                             } catch (_: Exception) {}
-                            // Disable mic, restart wake word
                             try { room.localParticipant.setMicrophoneEnabled(false) } catch (_: Exception) {}
                             audioPipeline.start()
                             voiceState = VoiceState.WAKE_WORD
@@ -530,5 +777,6 @@ fun MainDashboardScreen() {
             settings = appSettings,
             haConnectionOk = haConnectionOk,
         )
-    }
+
+    } // end main Box
 }

@@ -112,12 +112,12 @@ class IntercomManager(
                     put("call_id", call.callId)
                 }
                 postSignal(body)
-                _state.value = IntercomState.IN_CALL
-                Log.i(TAG, "Call accepted: ${call.callId}")
             } catch (e: Exception) {
-                Log.e(TAG, "Accept failed: ${e.message}")
+                Log.e(TAG, "Accept signal failed: ${e.message}")
             }
         }
+        _state.value = IntercomState.IN_CALL
+        Log.i(TAG, "Call accepted: ${call.callId}")
     }
 
     /** Decline an incoming call. */
@@ -164,10 +164,15 @@ class IntercomManager(
 
     private fun handleSignal(signal: JSONObject) {
         val type = signal.optString("type", "")
-        Log.i(TAG, "Received signal: $type")
+        Log.i(TAG, "Received signal: $type (current state: ${_state.value})")
 
         when (type) {
             "call_request" -> {
+                // Ignore if we're already in a call or ringing
+                if (_state.value != IntercomState.IDLE) {
+                    Log.w(TAG, "Ignoring call_request, already in state ${_state.value}")
+                    return
+                }
                 val callId = signal.getString("call_id")
                 val fromDevice = signal.getString("from")
                 val roomName = signal.getString("room_name")

@@ -60,6 +60,9 @@ signal_queues: dict[str, asyncio.Queue] = {}
 # Active calls: call_id -> {from, to, room_name, started_at, status}
 active_calls: dict[str, dict[str, Any]] = {}
 
+# Pending config: device_id -> {settings dict}
+pending_config: dict[str, dict[str, Any]] = {}
+
 
 def _get_or_create_queue(device_id: str) -> asyncio.Queue:
     if device_id not in signal_queues:
@@ -67,12 +70,21 @@ def _get_or_create_queue(device_id: str) -> asyncio.Queue:
     return signal_queues[device_id]
 
 
+PURGE_TIMEOUT = 300  # Remove devices offline for more than 5 minutes
+
+
 def _mark_stale_devices() -> None:
-    """Mark devices that haven't sent a heartbeat as offline."""
+    """Mark devices that haven't sent a heartbeat as offline, purge old ones."""
     now = time.time()
-    for info in device_registry.values():
+    to_remove = []
+    for device_id, info in device_registry.items():
         if info["status"] == "online" and (now - info["last_seen"]) > STALE_TIMEOUT:
             info["status"] = "offline"
+        elif info["status"] == "offline" and (now - info["last_seen"]) > PURGE_TIMEOUT:
+            to_remove.append(device_id)
+    for device_id in to_remove:
+        device_registry.pop(device_id, None)
+        signal_queues.pop(device_id, None)
 
 
 def _device_to_dict(device_id: str, info: dict) -> dict:
@@ -174,6 +186,16 @@ async def handle_heartbeat(request: web.Request) -> web.Response:
     # Allow updating call_state via heartbeat
     if "call_state" in body:
         device_registry[device_id]["call_state"] = body["call_state"]
+    else:
+        # Auto-reset stale call states if no active call involves this device
+        current_state = device_registry[device_id].get("call_state", "idle")
+        if current_state not in ("idle", "do_not_disturb"):
+            in_active_call = any(
+                c for c in active_calls.values()
+                if device_id in (c.get("from"), c.get("to"))
+            )
+            if not in_active_call:
+                device_registry[device_id]["call_state"] = "idle"
 
     return _json_response({"ok": True})
 
@@ -330,6 +352,41 @@ async def handle_options(request: web.Request) -> web.Response:
     return web.Response(status=204, headers=CORS_HEADERS)
 
 
+async def handle_configure(request: web.Request) -> web.Response:
+    """Store or retrieve pending configuration for a device.
+
+    POST: {device_id, settings: {display_name?, room_location?, ...}}
+    GET:  ?device_id=<id> -> returns and clears pending config
+    """
+    if request.method == "GET":
+        device_id = request.query.get("device_id", "").strip()
+        if not device_id:
+            return _json_response({"error": "device_id required"}, 400)
+        config = pending_config.pop(device_id, None)
+        return _json_response({"config": config})
+
+    # POST
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_response({"error": "invalid JSON"}, 400)
+
+    device_id = body.get("device_id", "").strip()
+    settings = body.get("settings", {})
+    if not device_id:
+        return _json_response({"error": "device_id required"}, 400)
+    if not settings:
+        return _json_response({"error": "settings required"}, 400)
+
+    # Merge with any existing pending config
+    existing = pending_config.get(device_id, {})
+    existing.update(settings)
+    pending_config[device_id] = existing
+
+    print(f"[configure] Pending config for {device_id}: {existing}")
+    return _json_response({"ok": True, "device_id": device_id})
+
+
 async def handle_health(request: web.Request) -> web.Response:
     return web.Response(text="ok", headers=CORS_HEADERS)
 
@@ -354,10 +411,15 @@ app.router.add_post("/signal", handle_signal)
 app.router.add_get("/signals", handle_signals)
 app.router.add_get("/calls", handle_calls)
 
+# Device configuration
+app.router.add_post("/configure", handle_configure)
+app.router.add_get("/configure", handle_configure)
+
 # CORS preflight
 app.router.add_route("OPTIONS", "/register", handle_options)
 app.router.add_route("OPTIONS", "/heartbeat", handle_options)
 app.router.add_route("OPTIONS", "/signal", handle_options)
+app.router.add_route("OPTIONS", "/configure", handle_options)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8090))

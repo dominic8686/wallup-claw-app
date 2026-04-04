@@ -29,6 +29,7 @@ from .const import (
     SERVICE_BROADCAST,
     SERVICE_HANGUP,
     SERVICE_SET_DND,
+    SERVICE_CONFIGURE_DEVICE,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -277,5 +278,42 @@ def _register_services(hass: HomeAssistant, coordinator: HermesIntercomCoordinat
         schema=vol.Schema({
             vol.Required("target"): cv.string,
             vol.Optional("enabled", default=True): cv.boolean,
+        }),
+    )
+
+    async def handle_configure_device(call: ServiceCall) -> None:
+        """Handle hermes_intercom.configure_device service."""
+        target = call.data["target"]
+        settings = {}
+        if "display_name" in call.data:
+            settings["display_name"] = call.data["display_name"]
+        if "room_location" in call.data:
+            settings["room_location"] = call.data["room_location"]
+
+        if not settings:
+            _LOGGER.warning("configure_device: no settings provided")
+            return
+
+        if coordinator._session is None or coordinator._session.closed:
+            coordinator._session = aiohttp.ClientSession()
+
+        async with coordinator._session.post(
+            f"{coordinator.url}/configure",
+            json={"device_id": target, "settings": settings},
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            result = await resp.json()
+            if result.get("ok"):
+                _LOGGER.info("Config pushed to %s: %s", target, settings)
+            else:
+                _LOGGER.warning("Config push failed for %s: %s", target, result)
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_CONFIGURE_DEVICE,
+        handle_configure_device,
+        schema=vol.Schema({
+            vol.Required("target"): cv.string,
+            vol.Optional("display_name"): cv.string,
+            vol.Optional("room_location"): cv.string,
         }),
     )
