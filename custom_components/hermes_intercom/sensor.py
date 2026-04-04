@@ -21,6 +21,8 @@ async def async_setup_entry(
     for device_id in coordinator.data:
         entities.append(TabletCallStateSensor(coordinator, device_id, entry))
         entities.append(TabletLastActivitySensor(coordinator, device_id, entry))
+    # Global sensors
+    entities.append(LastCallSensor(coordinator, entry))
     async_add_entities(entities, True)
 
 
@@ -76,3 +78,36 @@ class TabletLastActivitySensor(CoordinatorEntity, SensorEntity):
         if last_seen:
             return datetime.fromtimestamp(last_seen).isoformat()
         return None
+
+
+class LastCallSensor(CoordinatorEntity, SensorEntity):
+    """Sensor: most recent intercom call details."""
+
+    _attr_icon = "mdi:phone-log"
+
+    def __init__(self, coordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_last_call"
+        self._attr_name = "Hermes Intercom Last Call"
+
+    @property
+    def native_value(self) -> str | None:
+        call = self.coordinator.last_call
+        if call:
+            return f"{call.get('from', '?')} → {call.get('to', '?')}"
+        return "No calls"
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        call = self.coordinator.last_call
+        if not call:
+            return {"history_count": 0}
+        return {
+            "call_id": call.get("call_id"),
+            "from": call.get("from"),
+            "to": call.get("to"),
+            "started_at": call.get("started_at"),
+            "status": call.get("status"),
+            "duration": call.get("duration"),
+            "history_count": len(self.coordinator.call_history),
+        }

@@ -51,6 +51,8 @@ class HermesIntercomCoordinator(DataUpdateCoordinator):
         self.url = url
         self._session: aiohttp.ClientSession | None = None
         self._prev_statuses: dict[str, str] = {}  # device_id -> previous status
+        self.call_history: list[dict] = []  # Most recent calls (max 50)
+        self.last_call: dict | None = None  # Most recent call details
 
     async def _async_update_data(self) -> dict:
         """Fetch devices from token server."""
@@ -151,6 +153,18 @@ def _register_services(hass: HomeAssistant, coordinator: HermesIntercomCoordinat
         })
 
         if result.get("ok"):
+            call_record = {
+                "call_id": result.get("call_id"),
+                "from": source,
+                "to": target,
+                "started_at": coordinator.hass.helpers.event.dt_util.utcnow().isoformat(),
+                "status": "ringing",
+                "duration": None,
+            }
+            coordinator.last_call = call_record
+            coordinator.call_history.append(call_record)
+            if len(coordinator.call_history) > 50:
+                coordinator.call_history.pop(0)
             hass.bus.async_fire(EVENT_CALL_STARTED, {
                 "call_id": result.get("call_id"),
                 "from": source,

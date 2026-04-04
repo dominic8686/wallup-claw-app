@@ -1,0 +1,27 @@
+blueprint:
+  name: "Doorbell → Call All Tablets"
+  description: >
+    When the doorbell is triggered, call all intercom tablets so someone can answer.
+  domain: automation
+  input:
+    doorbell_entity:
+      name: Doorbell Sensor
+      description: The binary sensor that triggers when the doorbell is pressed.
+      selector:
+        entity:
+          domain: binary_sensor
+    call_source:
+      name: Call Source
+      description: The device ID to show as the caller (e.g., "doorbell" or "front_door").
+      default: "doorbell"
+
+trigger:
+  - platform: state
+    entity_id: !input doorbell_entity
+    to: "on"
+
+action:
+  - service: hermes_intercom.call
+    data:
+      target: "all"
+      source: !input call_source
