@@ -21,6 +21,14 @@ import numpy as np
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger("hermes-livekit")
 
+# Load Hermes .env file so HASS_TOKEN, HASS_URL etc. are available
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.expanduser("~/.hermes/.env"))
+    logger.info("Loaded ~/.hermes/.env")
+except Exception:
+    pass
+
 from livekit import rtc, api
 import json as _json
 
@@ -280,6 +288,139 @@ def resample_48k_to_16k_mono(data: bytes, channels: int = 1) -> bytes:
     return samples.tobytes()
 
 # ---------------------------------------------------------------------------
+# Home Assistant Real-Time Events
+# ---------------------------------------------------------------------------
+
+HA_WATCH_DOMAINS = os.environ.get("HA_WATCH_DOMAINS", "light,switch,climate,binary_sensor,alarm_control_panel,cover,fan").split(",")
+HA_COOLDOWN = int(os.environ.get("HA_COOLDOWN_SECONDS", "10"))
+
+def format_ha_event(entity_id: str, old_state: str, new_state: str, attrs: dict) -> str:
+    """Format a state change into a human-readable message."""
+    domain = entity_id.split(".")[0]
+    friendly = attrs.get("friendly_name", entity_id)
+
+    if domain == "climate":
+        current = attrs.get("current_temperature", "?")
+        target = attrs.get("temperature", "?")
+        return f"🌡️ {friendly}: HVAC changed from '{old_state}' to '{new_state}' (current: {current}°, target: {target}°)"
+    elif domain == "binary_sensor":
+        action = "triggered" if new_state == "on" else "cleared"
+        return f"🔔 {friendly}: {action}"
+    elif domain in ("light", "switch", "fan"):
+        action = "turned on" if new_state == "on" else "turned off"
+        icon = {"light": "💡", "switch": "🔌", "fan": "🌀"}.get(domain, "⚡")
+        return f"{icon} {friendly}: {action}"
+    elif domain == "alarm_control_panel":
+        return f"🚨 {friendly}: alarm changed from '{old_state}' to '{new_state}'"
+    elif domain == "cover":
+        action = "opened" if new_state == "open" else "closed" if new_state == "closed" else new_state
+        return f"🪟 {friendly}: {action}"
+    elif domain == "sensor":
+        unit = attrs.get("unit_of_measurement", "")
+        return f"📊 {friendly}: changed from {old_state}{unit} to {new_state}{unit}"
+    else:
+        return f"⚡ {friendly}: changed from '{old_state}' to '{new_state}'"
+
+
+async def ha_event_listener():
+    """Connect to Home Assistant WebSocket and relay state changes to LiveKit chat."""
+    import aiohttp
+
+    hass_url = os.environ.get("HASS_URL", "")
+    hass_token = os.environ.get("HASS_TOKEN", "")
+    if not hass_url or not hass_token:
+        logger.info("HA events: HASS_URL or HASS_TOKEN not set, skipping")
+        return
+
+    ws_url = hass_url.replace("http://", "ws://").replace("https://", "wss://") + "/api/websocket"
+    cooldowns = {}  # entity_id -> last_event_time
+    msg_id = 1
+
+    while True:
+        try:
+            logger.info("HA events: connecting to %s", ws_url)
+            async with aiohttp.ClientSession() as session:
+                async with session.ws_connect(ws_url, heartbeat=30) as ws:
+                    # Wait for auth_required
+                    auth_req = await ws.receive_json()
+                    if auth_req.get("type") != "auth_required":
+                        logger.warning("HA events: unexpected message: %s", auth_req)
+                        continue
+
+                    # Authenticate
+                    await ws.send_json({"type": "auth", "access_token": hass_token})
+                    auth_resp = await ws.receive_json()
+                    if auth_resp.get("type") != "auth_ok":
+                        logger.error("HA events: auth failed: %s", auth_resp)
+                        await asyncio.sleep(30)
+                        continue
+
+                    logger.info("HA events: authenticated, subscribing to state_changed")
+
+                    # Subscribe to state_changed events
+                    await ws.send_json({
+                        "id": msg_id,
+                        "type": "subscribe_events",
+                        "event_type": "state_changed",
+                    })
+                    msg_id += 1
+                    sub_resp = await ws.receive_json()
+                    if not sub_resp.get("success"):
+                        logger.error("HA events: subscribe failed: %s", sub_resp)
+                        continue
+
+                    logger.info("HA events: listening for state changes (domains: %s)", HA_WATCH_DOMAINS)
+                    await relay_transcript("system", "🏠 Connected to Home Assistant — monitoring device changes")
+
+                    # Listen for events
+                    async for msg in ws:
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            data = _json.loads(msg.data)
+                            if data.get("type") != "event":
+                                continue
+
+                            event = data.get("event", {})
+                            event_data = event.get("data", {})
+                            entity_id = event_data.get("entity_id", "")
+                            domain = entity_id.split(".")[0] if entity_id else ""
+
+                            # Filter by watched domains
+                            if domain not in HA_WATCH_DOMAINS:
+                                continue
+
+                            old = event_data.get("old_state", {}) or {}
+                            new = event_data.get("new_state", {}) or {}
+                            old_state = old.get("state", "unknown")
+                            new_state = new.get("state", "unknown")
+
+                            # Skip if state didn't actually change
+                            if old_state == new_state:
+                                continue
+
+                            # Cooldown per entity
+                            import time
+                            now = time.monotonic()
+                            last = cooldowns.get(entity_id, 0)
+                            if now - last < HA_COOLDOWN:
+                                continue
+                            cooldowns[entity_id] = now
+
+                            attrs = new.get("attributes", {})
+                            formatted = format_ha_event(entity_id, old_state, new_state, attrs)
+                            logger.info("HA event: %s", formatted)
+                            await relay_transcript("system", formatted)
+
+                        elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                            logger.warning("HA events: WebSocket closed/error")
+                            break
+
+        except Exception as e:
+            logger.warning("HA events: connection error: %s, reconnecting in 10s", e)
+
+        await asyncio.sleep(10)  # Reconnect backoff
+
+
+# ---------------------------------------------------------------------------
 # Main: LiveKit room participant
 # ---------------------------------------------------------------------------
 
@@ -453,6 +594,9 @@ async def main():
         asyncio.ensure_future(greet())
 
     logger.info("Agent ready, waiting for audio...")
+
+    # Start Home Assistant event listener
+    asyncio.ensure_future(ha_event_listener())
 
     # Keep running
     try:
