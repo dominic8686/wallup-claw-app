@@ -1,0 +1,27 @@
+# Build artifacts
+android-app/build/
+android-app/app/build/
+android-app/.gradle/
+*.apk
+
+# Binaries
+bin/
+*.zip
+*.exe
+
+# Secrets (keep .env.example instead)
+.env
+hermes-env*.txt
+hermes-config*.txt
+
+# Temp files
+*.log
+screenshot*.png
+ss*.png
+__pycache__/
+*.pyc
+
+# IDE
+.idea/
+*.iml
+local.properties
