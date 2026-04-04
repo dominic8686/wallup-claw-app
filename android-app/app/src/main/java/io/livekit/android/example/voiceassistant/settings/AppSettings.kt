@@ -45,10 +45,15 @@ class AppSettings(private val context: Context) {
         private val HA_AUTO_DETECTED_KEY = booleanPreferencesKey("ha_auto_detected")
         private val LIVEKIT_SERVER_URL_KEY = stringPreferencesKey("livekit_server_url")
         private val TOKEN_SERVER_URL_KEY = stringPreferencesKey("token_server_url")
+        private val ANAM_ENABLED_KEY = booleanPreferencesKey("anam_enabled")
+        private val ANAM_API_KEY_KEY = stringPreferencesKey("anam_api_key")
+        private val ANAM_AVATAR_ID_KEY = stringPreferencesKey("anam_avatar_id")
 
         const val DEFAULT_HA_URL = "http://homeassistant.local:8123"
         const val DEFAULT_LIVEKIT_URL = "ws://192.168.211.153:7880"
         const val DEFAULT_TOKEN_SERVER_URL = "http://192.168.211.153:8090"
+        const val DEFAULT_ANAM_API_KEY = "OTg0MGVkMGUtYzQyNi00OThlLWI3ZWUtM2ZlZDI3YTk1NDNjOkIvakJtQUp2TUdFcTNtWUZDTGU3bENRa0thcTRxc1NFOWZ4dUpkaWN0cVE9"
+        const val DEFAULT_ANAM_AVATAR_ID = "30fa96d0-26c4-4e55-94a0-517025942e18"  // Cara (stock)
     }
 
     val callMode: Flow<CallMode> = context.dataStore.data.map { prefs ->
@@ -79,6 +84,18 @@ class AppSettings(private val context: Context) {
         prefs[TOKEN_SERVER_URL_KEY] ?: DEFAULT_TOKEN_SERVER_URL
     }
 
+    val anamEnabled: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[ANAM_ENABLED_KEY] ?: false
+    }
+
+    val anamApiKey: Flow<String> = context.dataStore.data.map { prefs ->
+        prefs[ANAM_API_KEY_KEY] ?: DEFAULT_ANAM_API_KEY
+    }
+
+    val anamAvatarId: Flow<String> = context.dataStore.data.map { prefs ->
+        prefs[ANAM_AVATAR_ID_KEY] ?: DEFAULT_ANAM_AVATAR_ID
+    }
+
     suspend fun setCallMode(mode: CallMode) {
         context.dataStore.edit { it[CALL_MODE_KEY] = mode.value }
     }
@@ -105,5 +122,17 @@ class AppSettings(private val context: Context) {
 
     suspend fun setTokenServerUrl(url: String) {
         context.dataStore.edit { it[TOKEN_SERVER_URL_KEY] = url }
+    }
+
+    suspend fun setAnamEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[ANAM_ENABLED_KEY] = enabled }
+    }
+
+    suspend fun setAnamApiKey(key: String) {
+        context.dataStore.edit { it[ANAM_API_KEY_KEY] = key }
+    }
+
+    suspend fun setAnamAvatarId(id: String) {
+        context.dataStore.edit { it[ANAM_AVATAR_ID_KEY] = id }
     }
 }

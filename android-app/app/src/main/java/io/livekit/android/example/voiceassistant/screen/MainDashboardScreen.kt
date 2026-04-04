@@ -64,6 +64,9 @@ fun MainDashboardScreen() {
     val haUrl by appSettings.haUrl.collectAsState(initial = AppSettings.DEFAULT_HA_URL)
     val livekitUrl by appSettings.livekitServerUrl.collectAsState(initial = AppSettings.DEFAULT_LIVEKIT_URL)
     val tokenServerUrl by appSettings.tokenServerUrl.collectAsState(initial = AppSettings.DEFAULT_TOKEN_SERVER_URL)
+    val anamEnabled by appSettings.anamEnabled.collectAsState(initial = false)
+    val anamApiKey by appSettings.anamApiKey.collectAsState(initial = "")
+    val anamAvatarId by appSettings.anamAvatarId.collectAsState(initial = "")
 
     // --- Voice state ---
     var voiceState by remember { mutableStateOf(VoiceState.INITIALIZING) }
@@ -84,6 +87,9 @@ fun MainDashboardScreen() {
     val wakeWordManager = remember { WakeWordManager(context) }
     val room = remember { LiveKit.create(context) }
     var roomConnected by remember { mutableStateOf(false) }
+
+    // --- Avatar ---
+    var avatarVideoTrack by remember { mutableStateOf<io.livekit.android.room.track.VideoTrack?>(null) }
 
     // --- Layout ---
     val isConversation = voiceState == VoiceState.CONVERSATION
@@ -177,10 +183,18 @@ fun MainDashboardScreen() {
                             room.localParticipant.setMicrophoneEnabled(true)
                             Log.i(TAG, "LiveKit mic enabled")
 
-                            // Signal server
-                            val signal = "{\"type\":\"wake_word_detected\",\"score\":${"%.3f".format(score)}}"
-                            room.localParticipant.publishData(signal.toByteArray())
-                            Log.i(TAG, "Sent wake_word_detected")
+                            // Signal server (include avatar config if enabled)
+                            val signalJson = JSONObject().apply {
+                                put("type", "wake_word_detected")
+                                put("score", "%.3f".format(score))
+                                if (anamEnabled && anamApiKey.isNotEmpty() && anamAvatarId.isNotEmpty()) {
+                                    put("anam_enabled", true)
+                                    put("anam_api_key", anamApiKey)
+                                    put("anam_avatar_id", anamAvatarId)
+                                }
+                            }
+                            room.localParticipant.publishData(signalJson.toString().toByteArray())
+                            Log.i(TAG, "Sent wake_word_detected (avatar=${anamEnabled})")
                         } catch (e: Exception) {
                             Log.e(TAG, "LiveKit failed: ${e.message}")
                         }
@@ -215,6 +229,22 @@ fun MainDashboardScreen() {
                         }
                         conversationStatus = if (isUser) ConversationStatus.THINKING else ConversationStatus.SPEAKING
                         Log.d(TAG, "Transcription [${if (isUser) "user" else "agent"}]: ${segment.text}")
+                    }
+                }
+                is RoomEvent.TrackSubscribed -> {
+                    val participant = event.participant
+                    val track = event.track
+                    if (participant.identity.toString().startsWith("anam") &&
+                        track is io.livekit.android.room.track.VideoTrack) {
+                        avatarVideoTrack = track
+                        Log.i(TAG, "Avatar video track subscribed")
+                    }
+                }
+                is RoomEvent.TrackUnsubscribed -> {
+                    val track = event.track
+                    if (track == avatarVideoTrack) {
+                        avatarVideoTrack = null
+                        Log.i(TAG, "Avatar video track unsubscribed")
                     }
                 }
                 is RoomEvent.DataReceived -> {
@@ -374,6 +404,7 @@ fun MainDashboardScreen() {
                 ConversationCard(
                     messages = chatMessages,
                     status = conversationStatus,
+                    avatarVideoTrack = avatarVideoTrack,
                     modifier = Modifier
                         .width(chatCardWidth)
                         .fillMaxHeight()
@@ -394,9 +425,17 @@ fun MainDashboardScreen() {
                         scope.launch {
                             audioPipeline.stop()
                             try {
-                                room.localParticipant.setMicrophoneEnabled(true)
-                                val signal = "{\"type\":\"wake_word_detected\",\"score\":1.0}"
-                                room.localParticipant.publishData(signal.toByteArray())
+                room.localParticipant.setMicrophoneEnabled(true)
+                                val manualSignal = JSONObject().apply {
+                                    put("type", "wake_word_detected")
+                                    put("score", "1.0")
+                                    if (anamEnabled && anamApiKey.isNotEmpty() && anamAvatarId.isNotEmpty()) {
+                                        put("anam_enabled", true)
+                                        put("anam_api_key", anamApiKey)
+                                        put("anam_avatar_id", anamAvatarId)
+                                    }
+                                }
+                                room.localParticipant.publishData(manualSignal.toString().toByteArray())
                             } catch (e: Exception) {
                                 Log.e(TAG, "Manual trigger failed: ${e.message}")
                             }
