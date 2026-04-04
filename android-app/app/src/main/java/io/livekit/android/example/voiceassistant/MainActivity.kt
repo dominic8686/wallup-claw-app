@@ -14,6 +14,8 @@ import androidx.navigation.compose.rememberNavController
 import io.livekit.android.LiveKit
 import io.livekit.android.example.voiceassistant.screen.ConnectRoute
 import io.livekit.android.example.voiceassistant.screen.ConnectScreen
+import io.livekit.android.example.voiceassistant.screen.HermesRoute
+import io.livekit.android.example.voiceassistant.screen.HermesScreen
 import io.livekit.android.example.voiceassistant.screen.SettingsRoute
 import io.livekit.android.example.voiceassistant.screen.SettingsScreen
 import io.livekit.android.example.voiceassistant.screen.VoiceAssistantRoute
@@ -35,7 +37,10 @@ class MainActivity : ComponentActivity() {
                     Box(modifier = Modifier.padding(innerPadding)) {
 
                         // Set up NavHost for the app
-                        NavHost(navController, startDestination = ConnectRoute) {
+                        NavHost(navController, startDestination = HermesRoute) {
+                            composable<HermesRoute> {
+                                HermesScreen()
+                            }
                             composable<ConnectRoute> {
                                 ConnectScreen(
                                     navigateToVoiceAssistant = { voiceAssistantRoute ->
