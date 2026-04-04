@@ -190,7 +190,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                                 val sr = 16000
                                 val bufSize = AudioRecord.getMinBufferSize(sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
                                 try {
-                                    val recorder = AudioRecord(
+                                    var recorder = AudioRecord(
                                         MediaRecorder.AudioSource.MIC, sr,
                                         AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
                                         bufSize * 2
@@ -199,6 +199,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                                     android.util.Log.i("WakeWordTest", "Capture started (IO thread)")
                                     val byteBuffer = ByteArray(4096)
                                     var frameCount = 0
+                                    var zeroCount = 0
                                     while (isTesting) {
                                         val bytesRead = recorder.read(byteBuffer, 0, byteBuffer.size)
                                         if (bytesRead > 0) {
@@ -207,9 +208,33 @@ fun SettingsScreen(onBack: () -> Unit) {
                                             java.nio.ByteBuffer.wrap(byteBuffer, 0, bytesRead)
                                                 .order(java.nio.ByteOrder.LITTLE_ENDIAN)
                                                 .asShortBuffer().get(shorts)
+
+                                            // Check if mic is returning zeros
+                                            val maxVal = shorts.maxOrNull()?.toInt() ?: 0
+                                            if (maxVal == 0) {
+                                                zeroCount++
+                                                if (zeroCount >= 20) {
+                                                    // Restart AudioRecord
+                                                    android.util.Log.w("WakeWordTest", "Mic dead ($zeroCount zeros), restarting...")
+                                                    recorder.stop()
+                                                    recorder.release()
+                                                    kotlinx.coroutines.delay(200)
+                                                    recorder = AudioRecord(
+                                                        MediaRecorder.AudioSource.MIC, sr,
+                                                        AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
+                                                        bufSize * 2
+                                                    )
+                                                    recorder.startRecording()
+                                                    zeroCount = 0
+                                                    android.util.Log.i("WakeWordTest", "Mic restarted")
+                                                }
+                                            } else {
+                                                zeroCount = 0
+                                            }
+
                                             if (frameCount <= 5 || frameCount % 100 == 0) {
                                                 val rms = Math.sqrt(shorts.map { it.toDouble() * it.toDouble() }.average())
-                                                android.util.Log.d("WakeWordTest", "Capture #$frameCount: rms=${"%,.0f".format(rms)}")
+                                                android.util.Log.d("WakeWordTest", "Capture #$frameCount: rms=${"%,.0f".format(rms)} zeros=$zeroCount")
                                             }
                                             audioChannel.trySend(shorts)
                                         }
