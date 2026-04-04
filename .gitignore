@@ -2,6 +2,11 @@
 android-app/build/
 android-app/app/build/
 android-app/.gradle/
+android-app/.kotlin/
+wakeword-test/app/build/
+wakeword-test/.gradle/
+wakeword-test/.kotlin/
+wakeword-test/build/
 *.apk
 
 # Binaries
@@ -14,10 +19,15 @@ bin/
 hermes-env*.txt
 hermes-config*.txt
 
-# Temp files
+# Temp / debug files
 *.log
 screenshot*.png
 ss*.png
+tablet_screenshot*.png
+*_broken.png
+timeout*.png
+ww_test.png
+hermes*.png
 __pycache__/
 *.pyc
 

@@ -1,6 +1,17 @@
-# Hermes Voice Agent — LiveKit + Android Tablet
+# Hermes Voice Agent — LiveKit + Android Tablet + Intercom
 
-A self-hosted voice assistant that uses **LiveKit** for real-time audio transport and **Hermes Agent** as the AI brain. Speak to your Android tablet and get intelligent responses powered by Hermes' full tool suite — including Home Assistant control, memory, skills, and more.
+A self-hosted voice assistant and **multi-tablet intercom** system built on **LiveKit** (WebRTC), **Hermes Agent** (AI brain), and **Home Assistant**. Speak to wall-mounted Android tablets, control your smart home by voice, and call between rooms.
+
+## Features
+
+- **Voice Assistant** — "Hey Jarvis" wake word → AI conversation with full Hermes toolset (HA control, memory, web search, 56 MCP tools)
+- **Multi-Tablet Intercom** — Call between tablets in different rooms, with contacts list, incoming call overlay, and active call UI
+- **Home Assistant Integration** — Custom integration (`hermes_intercom`) exposes tablets as HA devices with call/broadcast/DND services
+- **Automation Blueprints** — Doorbell → call all, missed call → phone notification, bedtime DND, motion → announce
+- **Lovelace Dashboard Card** — Device grid with status, call buttons, and quick announce bar
+- **Anam Avatar** — Optional animated avatar during voice conversations
+
+See [AGENTS.md](AGENTS.md) for full architecture, deployment, and operations documentation.
 
 ## Architecture
 
@@ -193,11 +204,13 @@ livekit-voice-agent/
 └── README.md                 # This file
 ```
 
-## Future Work
+## Future Work (Phase 6)
 
-- **Wake word detection**: OpenWakeWord on Android (ONNX) with configurable models
-- **Persistent service**: Systemd units for auto-start on the LXC container
-- **ElevenLabs TTS**: Higher quality voice (needs valid voice ID)
-- **Streaming TTS**: Send audio as it generates instead of waiting for full response
-- **Production LiveKit**: Replace `--dev` mode with proper API key/secret
-- **WiFi-only mode**: Remove USB/ADB dependency, use LAN IP directly
+- **QR code onboarding**: HA generates QR → tablet scans to auto-configure
+- **AI receptionist**: Hermes answers on behalf of DND/unanswered tablets
+- **Battery + WiFi reporting**: Tablet metrics as HA sensors
+- **Remote volume control**: HA number entity controls tablet volume
+- **Video calling**: LiveKit video tracks between rooms
+- **Multi-room audio**: Tablets as `media_player` entities
+- **Production LiveKit**: Replace `--dev` mode with proper keys
+- **Systemd units**: Auto-start on LXC boot

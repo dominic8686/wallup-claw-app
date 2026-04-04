@@ -4,6 +4,6 @@ rtc:
   port_range_end: 50120
   use_external_ip: true
 keys:
-  devkey: devsecret123456789012345678901234
+  devkey: secret
 logging:
   level: info
