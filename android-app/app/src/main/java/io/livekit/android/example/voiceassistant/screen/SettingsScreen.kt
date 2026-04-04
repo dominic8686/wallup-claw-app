@@ -182,6 +182,48 @@ fun SettingsScreen(onBack: () -> Unit) {
                         } else {
                             isTesting = true
                             val modelInfo = BUNDLED_MODELS.find { it.id == selectedModel } ?: BUNDLED_MODELS.first()
+                            // Split capture and processing like wyoming does
+                            val audioChannel = kotlinx.coroutines.channels.Channel<ShortArray>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+
+                            // Audio capture on IO thread (never blocked by ONNX)
+                            scope.launch(Dispatchers.IO) {
+                                val sr = 16000
+                                val bufSize = AudioRecord.getMinBufferSize(sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+                                try {
+                                    val recorder = AudioRecord(
+                                        MediaRecorder.AudioSource.MIC, sr,
+                                        AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
+                                        bufSize * 2
+                                    )
+                                    recorder.startRecording()
+                                    android.util.Log.i("WakeWordTest", "Capture started (IO thread)")
+                                    val byteBuffer = ByteArray(4096)
+                                    var frameCount = 0
+                                    while (isTesting) {
+                                        val bytesRead = recorder.read(byteBuffer, 0, byteBuffer.size)
+                                        if (bytesRead > 0) {
+                                            frameCount++
+                                            val shorts = ShortArray(bytesRead / 2)
+                                            java.nio.ByteBuffer.wrap(byteBuffer, 0, bytesRead)
+                                                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                                                .asShortBuffer().get(shorts)
+                                            if (frameCount <= 5 || frameCount % 100 == 0) {
+                                                val rms = Math.sqrt(shorts.map { it.toDouble() * it.toDouble() }.average())
+                                                android.util.Log.d("WakeWordTest", "Capture #$frameCount: rms=${"%,.0f".format(rms)}")
+                                            }
+                                            audioChannel.trySend(shorts)
+                                        }
+                                    }
+                                    recorder.stop()
+                                    recorder.release()
+                                    audioChannel.close()
+                                    android.util.Log.i("WakeWordTest", "Capture stopped")
+                                } catch (e: Exception) {
+                                    android.util.Log.e("WakeWordTest", "Capture error: ${e.message}")
+                                }
+                            }
+
+                            // ONNX processing on Default thread (separate from capture)
                             scope.launch(Dispatchers.Default) {
                                 val engine = OpenWakeWordEngine()
                                 engine.onScoreUpdate = { score ->
@@ -192,44 +234,11 @@ fun SettingsScreen(onBack: () -> Unit) {
                                     isTesting = false
                                     return@launch
                                 }
-
-                                // Use 48kHz (device-compatible) and downsample to 16kHz
-                                val captureSr = 48000
-                                val bufSize = AudioRecord.getMinBufferSize(captureSr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-                                android.util.Log.i("WakeWordTest", "AudioRecord: captureSr=$captureSr bufSize=$bufSize")
-                                try {
-                                    val recorder = AudioRecord(
-                                        MediaRecorder.AudioSource.MIC, captureSr,
-                                        AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
-                                        maxOf(bufSize * 2, 16384)
-                                    )
-                                    android.util.Log.i("WakeWordTest", "AudioRecord state: ${recorder.state} (1=initialized)")
-                                    recorder.startRecording()
-                                    android.util.Log.i("WakeWordTest", "Recording started, recordingState=${recorder.recordingState}")
-                                    // Read 3840 samples at 48kHz = 80ms, downsample 3:1 to 1280 at 16kHz
-                                    val buf48 = ShortArray(3840)
-                                    var frameCount = 0
-                                    while (isTesting) {
-                                        val read = recorder.read(buf48, 0, buf48.size)
-                                        if (read > 0) {
-                                            frameCount++
-                                            // Downsample 48kHz to 16kHz (take every 3rd sample)
-                                            val buf16 = ShortArray(read / 3)
-                                            for (i in buf16.indices) buf16[i] = buf48[i * 3]
-
-                                            if (frameCount <= 5 || frameCount % 100 == 0) {
-                                                val rms = Math.sqrt(buf16.map { it.toDouble() * it.toDouble() }.average())
-                                                android.util.Log.d("WakeWordTest", "Frame $frameCount: read48=$read out16=${buf16.size} rms=${"%,.0f".format(rms)}")
-                                            }
-                                            engine.processAudio(buf16)
-                                        }
-                                    }
-                                    recorder.stop()
-                                    recorder.release()
-                                } catch (e: SecurityException) {
-                                    // Mic permission not granted
+                                for (shorts in audioChannel) {
+                                    engine.processAudio(shorts)
                                 }
                                 engine.release()
+                                android.util.Log.i("WakeWordTest", "Processing stopped")
                             }
                         }
                     },
