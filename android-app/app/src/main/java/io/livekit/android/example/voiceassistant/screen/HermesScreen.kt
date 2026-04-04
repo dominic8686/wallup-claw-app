@@ -41,7 +41,7 @@ enum class HermesState {
 }
 
 @Composable
-fun HermesScreen() {
+fun HermesScreen(navigateToSettings: () -> Unit = {}) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -132,8 +132,8 @@ fun HermesScreen() {
                             Log.e("HermesScreen", "LiveKit failed: ${e.message}")
                         }
 
-                        // Max 5 min timeout (server signals conversation_ended sooner)
-                        delay(300000)
+                        // Timeout slightly longer than server's 30s silence timeout
+                        delay(45000)
                         if (state == HermesState.CONVERSATION) {
                             try { room.localParticipant.setMicrophoneEnabled(false) } catch (_: Exception) {}
                             try { room.disconnect(); roomConnected = false } catch (_: Exception) {}
@@ -265,7 +265,7 @@ fun HermesScreen() {
         Box(
             modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)
         ) {
-            IconButton(onClick = { /* TODO: navigate to settings */ }) {
+            IconButton(onClick = navigateToSettings) {
                 Text("⚙", fontSize = 24.sp)
             }
         }

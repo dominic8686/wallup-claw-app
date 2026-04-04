@@ -39,7 +39,11 @@ class MainActivity : ComponentActivity() {
                         // Set up NavHost for the app
                         NavHost(navController, startDestination = HermesRoute) {
                             composable<HermesRoute> {
-                                HermesScreen()
+                                HermesScreen(
+                                    navigateToSettings = {
+                                        runOnUiThread { navController.navigate(SettingsRoute) }
+                                    }
+                                )
                             }
                             composable<ConnectRoute> {
                                 ConnectScreen(
