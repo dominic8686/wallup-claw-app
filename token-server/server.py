@@ -162,9 +162,15 @@ CORS_HEADERS = {
 }
 
 # Paths that don't require authentication.
-# Tablet-facing endpoints (register, heartbeat, signals, token) are exempt
-# because the Android app connects directly on the LAN without an API key.
-_PUBLIC_PATHS = {"/health", "/avatar", "/register", "/heartbeat", "/signals", "/token"}
+# Tablet-facing endpoints are exempt because the Android app connects
+# directly on the LAN without an API key. Auth protects external-facing
+# endpoints only (e.g., HA integration card via the internet).
+_PUBLIC_PATHS = {
+    "/health", "/avatar", "/token",
+    "/register", "/heartbeat", "/devices", "/configure",
+    "/signal", "/signals", "/calls",
+    "/tts",
+}
 
 
 @web.middleware

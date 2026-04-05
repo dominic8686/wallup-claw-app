@@ -69,6 +69,7 @@ class AppSettings(private val context: Context) {
         private val UPDATE_INTERVAL_KEY = stringPreferencesKey("update_check_interval")
         private val LAST_UPDATE_CHECK_KEY = longPreferencesKey("last_update_check")
         private val SECURITY_CAMERA_ENABLED_KEY = booleanPreferencesKey("security_camera_enabled")
+        private val INTERCOM_API_KEY_KEY = stringPreferencesKey("intercom_api_key")
 
         const val DEFAULT_HA_URL = "http://homeassistant.local:8123"
         const val DEFAULT_LIVEKIT_URL = "ws://192.168.211.153:7880"
@@ -138,6 +139,10 @@ class AppSettings(private val context: Context) {
         prefs[SECURITY_CAMERA_ENABLED_KEY] ?: true  // On by default for wall-mounted tablets
     }
 
+    val intercomApiKey: Flow<String> = context.dataStore.data.map { prefs ->
+        prefs[INTERCOM_API_KEY_KEY] ?: ""
+    }
+
     suspend fun setCallMode(mode: CallMode) {
         context.dataStore.edit { it[CALL_MODE_KEY] = mode.value }
     }
@@ -196,5 +201,9 @@ class AppSettings(private val context: Context) {
 
     suspend fun setSecurityCameraEnabled(enabled: Boolean) {
         context.dataStore.edit { it[SECURITY_CAMERA_ENABLED_KEY] = enabled }
+    }
+
+    suspend fun setIntercomApiKey(key: String) {
+        context.dataStore.edit { it[INTERCOM_API_KEY_KEY] = key }
     }
 }
