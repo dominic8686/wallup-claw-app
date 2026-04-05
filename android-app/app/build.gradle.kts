@@ -14,11 +14,11 @@ if (localPropsFile.exists()) {
 }
 
 android {
-    namespace = "io.livekit.android.example.voiceassistant"
+    namespace = "com.wallupclaw.app"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "io.livekit.android.example.voiceassistant"
+        applicationId = "com.wallupclaw.app"
         minSdk = 24
         targetSdk = 36
         versionCode = 8

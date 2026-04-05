@@ -25,7 +25,7 @@
         android:theme="@style/Theme.LiveKitVoiceAssistantExample"
         tools:targetApi="31">
         <activity
-            android:name=".MainActivity"
+            android:name="com.wallupclaw.app.MainActivity"
             android:exported="true"
             android:label="@string/app_name"
             android:theme="@style/Theme.LiveKitVoiceAssistantExample">
@@ -36,11 +36,11 @@
             </intent-filter>
         </activity>
         <service
-            android:name=".wakeword.WakeWordService"
+            android:name="com.wallupclaw.app.wakeword.WakeWordService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
         <service
-            android:name=".dlna.DlnaRendererService"
+            android:name="com.wallupclaw.app.dlna.DlnaRendererService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
 
