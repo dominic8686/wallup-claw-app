@@ -41,6 +41,7 @@ fun SettingsDrawer(
     val livekitUrl by settings.livekitServerUrl.collectAsState(initial = AppSettings.DEFAULT_LIVEKIT_URL)
     val tokenUrl by settings.tokenServerUrl.collectAsState(initial = AppSettings.DEFAULT_TOKEN_SERVER_URL)
     val avatarEnabled by settings.avatarEnabled.collectAsState(initial = false)
+    val intercomApiKey by settings.intercomApiKey.collectAsState(initial = "")
     val deviceId by settings.deviceId.collectAsState(initial = AppSettings.DEFAULT_DEVICE_ID)
     val deviceDisplayName by settings.deviceDisplayName.collectAsState(initial = AppSettings.DEFAULT_DEVICE_DISPLAY_NAME)
     val autoUpdateEnabled by settings.autoUpdateEnabled.collectAsState(initial = false)
@@ -255,6 +256,22 @@ fun SettingsDrawer(
                         if (tokenEdit != tokenUrl) {
                             TextButton(onClick = {
                                 scope.launch { settings.setTokenServerUrl(tokenEdit) }
+                            }) { Text("Save") }
+                        }
+                    }
+                )
+
+                var apiKeyEdit by remember(intercomApiKey) { mutableStateOf(intercomApiKey) }
+                OutlinedTextField(
+                    value = apiKeyEdit,
+                    onValueChange = { apiKeyEdit = it },
+                    label = { Text("Intercom API Key") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    trailingIcon = {
+                        if (apiKeyEdit != intercomApiKey) {
+                            TextButton(onClick = {
+                                scope.launch { settings.setIntercomApiKey(apiKeyEdit) }
                             }) { Text("Save") }
                         }
                     }
