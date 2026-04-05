@@ -48,16 +48,14 @@ A self-hosted voice assistant and multi-tablet intercom system built on **LiveKi
 ## Components
 
 ### 1. LiveKit Server
-- **Location**: Proxmox LXC container (ID 200) at `192.168.211.153`
-- **Binary**: `/usr/local/bin/livekit-server`
-- **Mode**: `--dev --bind 0.0.0.0`
-- **Config**: `/etc/livekit.yaml`
+- **Image**: `livekit/livekit-server:latest` (Docker)
+- **Config**: `livekit.yaml` (mounted at `/etc/livekit.yaml`)
 - **Credentials**: API key `devkey`, secret `secret`
-- **Ports**: 7880 (API/WS), 50100-50120 (RTC UDP)
+- **Ports**: 7880 (API/WS), 50100-50120 (RTC UDP) — exposed via `network_mode: host`
 
 ### 2. Token & Device Registry Server
 - **File**: `token-server/server.py`
-- **Location on LXC**: `/opt/agent/token-server.py`
+- **Docker**: built from `token-server/Dockerfile`
 - **Port**: 8090
 
 **Endpoints**:
@@ -76,8 +74,9 @@ A self-hosted voice assistant and multi-tablet intercom system built on **LiveKi
 
 ### 3. Voice Agent
 - **File**: `agent/agent.py`
-- **Location on LXC**: `/opt/agent/agent.py`
-- **Python venv**: `/opt/agent/`
+- **Docker**: built from `agent/Dockerfile`
+- **Hermes**: mounted from `/opt/hermes` on the LXC host (read-only)
+- **Hermes config**: mounted from `/root/.hermes` on the LXC host (read-only)
 
 **Voice pipeline**:
 1. **VAD** — Silero v5 ONNX, 16kHz, 512-sample chunks, speech threshold 0.5
@@ -173,33 +172,25 @@ token_server_url: http://192.168.211.153:8090
 
 ## Deployment
 
-### Deploy Agent & Token Server
+### First-Time Setup on LXC
 ```bash
-# From Windows (PowerShell)
+# Install Docker (Debian)
+apt-get update && apt-get install -y docker.io docker-compose-plugin
+systemctl enable --now docker
+```
+
+### Deploy / Update Services
+From Windows, rsync the repo to the LXC then run compose:
+```powershell
+# From Windows (PowerShell) — sync repo to LXC
 $KEY = "C:\Users\domin\.ssh\proxmox_hermes"
-$HOST = "root@192.168.211.153"
+$LXC = "root@192.168.211.153"
+scp -i $KEY -r agent token-server livekit.yaml docker-compose.yml .env "${LXC}:/opt/livekit-voice-agent/"
+```
 
-# Copy files
-Get-Content -Raw token-server\server.py | ssh -i $KEY $HOST "cat > /opt/agent/token-server.py"
-Get-Content -Raw agent\agent.py | ssh -i $KEY $HOST "cat > /opt/agent/agent.py"
-
-# SSH in and restart
-ssh -i $KEY $HOST
-pkill -f token-server || true
-pkill -f agent.py || true
-sleep 2
-
-# Start token server
-LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret \
-LIVEKIT_EXTERNAL_URL=ws://192.168.211.153:7880 \
-nohup /opt/agent/bin/python /opt/agent/token-server.py > /var/log/token.log 2>&1 &
-
-# Start agent
-export LIVEKIT_URL=ws://localhost:7880
-export LIVEKIT_API_KEY=devkey
-export LIVEKIT_API_SECRET=secret
-source ~/.hermes/.env
-nohup /opt/agent/bin/python /opt/agent/agent.py > /var/log/agent.log 2>&1 &
+```bash
+# On the LXC — bring everything up (or rebuild after code changes)
+docker compose -f /opt/livekit-voice-agent/docker-compose.yml up -d --build
 ```
 
 ### Build & Deploy Android App
@@ -228,18 +219,15 @@ Open the app → swipe left or tap ⚙ → Settings:
 
 ### Environment Variables (.env)
 ```
-PROXMOX_HOST=192.168.211.9
-PROXMOX_SSH_KEY=C:\Users\domin\.ssh\proxmox_hermes
 CT200_HOST=192.168.211.153
 LIVEKIT_API_KEY=devkey
 LIVEKIT_API_SECRET=secret
-LIVEKIT_URL=ws://192.168.211.153:7880
-TOKEN_SERVER_URL=http://192.168.211.153:8090
+OPENAI_API_KEY=<key>
+OPENROUTER_API_KEY=<key>
 HASS_URL=http://192.168.211.3:8123
 HASS_TOKEN=<long-lived-access-token>
-OPENAI_API_KEY=<key>
-ELEVENLABS_API_KEY=<key>
 ```
+See `.env.example` for a full template.
 
 ## Logs & Debugging
 
@@ -247,14 +235,16 @@ ELEVENLABS_API_KEY=<key>
 # SSH into LXC
 ssh -i ~/.ssh/proxmox_hermes root@192.168.211.153
 
-# Agent logs (VAD, STT, Hermes, TTS)
-tail -f /var/log/agent.log
+# Follow all service logs
+docker compose -f /opt/livekit-voice-agent/docker-compose.yml logs -f
 
-# Token server logs
-tail -f /var/log/token.log
+# Individual service logs
+docker compose -f /opt/livekit-voice-agent/docker-compose.yml logs -f voice-agent
+docker compose -f /opt/livekit-voice-agent/docker-compose.yml logs -f token-server
+docker compose -f /opt/livekit-voice-agent/docker-compose.yml logs -f livekit-server
 
-# LiveKit server logs
-tail -f /var/log/livekit.log
+# Container status
+docker compose -f /opt/livekit-voice-agent/docker-compose.yml ps
 
 # Android app logs (from Windows)
 adb logcat -s "MainDashboard","IntercomManager","livekit"

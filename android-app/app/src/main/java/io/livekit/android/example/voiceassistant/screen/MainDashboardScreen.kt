@@ -59,6 +59,7 @@ enum class VoiceState {
     INITIALIZING,
     WAKE_WORD,
     CONVERSATION,
+    ENDING,
 }
 
 @OptIn(Beta::class)
@@ -106,8 +107,78 @@ fun MainDashboardScreen() {
     // --- Avatar ---
     var avatarVideoTrack by remember { mutableStateOf<io.livekit.android.room.track.VideoTrack?>(null) }
 
+    // --- Ending fallback job ---
+    var endingTimeoutJob by remember { mutableStateOf<Job?>(null) }
+
     // --- Layout ---
-    val isConversation = voiceState == VoiceState.CONVERSATION
+    val isConversation = voiceState == VoiceState.CONVERSATION || voiceState == VoiceState.ENDING
+
+    // --- Shared conversation lifecycle functions ---
+    val startConversation: (String) -> Unit = remember(room, audioPipeline, anamEnabled, anamApiKey, anamAvatarId) {
+        { score: String ->
+            if (voiceState == VoiceState.WAKE_WORD) {
+                voiceState = VoiceState.CONVERSATION
+                conversationStatus = ConversationStatus.LISTENING
+                chatMessages.clear()
+                scope.launch {
+                    audioPipeline.stop()
+                    try {
+                        room.localParticipant.setMicrophoneEnabled(true)
+                        Log.i(TAG, "LiveKit mic enabled")
+                        val signalJson = JSONObject().apply {
+                            put("type", "wake_word_detected")
+                            put("score", score)
+                            if (anamEnabled && anamApiKey.isNotEmpty() && anamAvatarId.isNotEmpty()) {
+                                put("anam_enabled", true)
+                                put("anam_api_key", anamApiKey)
+                                put("anam_avatar_id", anamAvatarId)
+                            }
+                        }
+                        room.localParticipant.publishData(signalJson.toString().toByteArray())
+                        Log.i(TAG, "Sent wake_word_detected (score=$score, avatar=$anamEnabled)")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "startConversation failed: ${e.message}")
+                    }
+                }
+            }
+        }
+    }
+
+    fun resetToWakeWord() {
+        endingTimeoutJob?.cancel()
+        endingTimeoutJob = null
+        scope.launch {
+            try { room.localParticipant.setMicrophoneEnabled(false) } catch (_: Exception) {}
+            delay(200) // Let LiveKit release AudioRecord before we reclaim it
+            audioPipeline.start()
+            voiceState = VoiceState.WAKE_WORD
+            Log.i(TAG, "Reset to WAKE_WORD")
+        }
+    }
+
+    val endConversation: () -> Unit = remember(room) {
+        {
+            if (voiceState == VoiceState.CONVERSATION) {
+                voiceState = VoiceState.ENDING
+                Log.i(TAG, "Ending conversation, waiting for server confirmation...")
+                scope.launch {
+                    try {
+                        val endSignal = JSONObject().put("type", "end_conversation")
+                        room.localParticipant.publishData(endSignal.toString().toByteArray())
+                    } catch (_: Exception) {}
+                    try { room.localParticipant.setMicrophoneEnabled(false) } catch (_: Exception) {}
+                }
+                // Fallback: if server doesn't confirm within 3s, force reset
+                endingTimeoutJob = scope.launch {
+                    delay(3000)
+                    if (voiceState == VoiceState.ENDING) {
+                        Log.w(TAG, "Server confirmation timeout, force-resetting to WAKE_WORD")
+                        resetToWakeWord()
+                    }
+                }
+            }
+        }
+    }
 
     // --- Auto-detect HA on launch ---
     LaunchedEffect(Unit) {
@@ -348,35 +419,7 @@ fun MainDashboardScreen() {
             wakeWordManager.scores.collectLatest { score ->
                 if (score > 0.5f && voiceState == VoiceState.WAKE_WORD) {
                     Log.i(TAG, "Wake word detected! score=${"%.3f".format(score)}")
-                    voiceState = VoiceState.CONVERSATION
-                    conversationStatus = ConversationStatus.LISTENING
-                    chatMessages.clear()
-
-                    scope.launch {
-                        // Stop AudioRecord so LiveKit can use the mic
-                        audioPipeline.stop()
-
-                        try {
-                            room.localParticipant.setMicrophoneEnabled(true)
-                            Log.i(TAG, "LiveKit mic enabled")
-
-                            // Signal server (include avatar config if enabled)
-                            val signalJson = JSONObject().apply {
-                                put("type", "wake_word_detected")
-                                put("score", "%.3f".format(score))
-                                if (anamEnabled && anamApiKey.isNotEmpty() && anamAvatarId.isNotEmpty()) {
-                                    put("anam_enabled", true)
-                                    put("anam_api_key", anamApiKey)
-                                    put("anam_avatar_id", anamAvatarId)
-                                }
-                            }
-                            room.localParticipant.publishData(signalJson.toString().toByteArray())
-                            Log.i(TAG, "Sent wake_word_detected (avatar=${anamEnabled})")
-                        } catch (e: Exception) {
-                            Log.e(TAG, "LiveKit failed: ${e.message}")
-                        }
-                        // No client-side timeout — server sends conversation_ended
-                    }
+                    startConversation("%.3f".format(score))
                 }
             }
         }
@@ -433,10 +476,7 @@ fun MainDashboardScreen() {
                         when (type) {
                             "conversation_ended" -> {
                                 Log.i(TAG, "Server sent conversation_ended")
-                                // Disable mic, restart wake word pipeline
-                                try { room.localParticipant.setMicrophoneEnabled(false) } catch (_: Exception) {}
-                                audioPipeline.start()
-                                voiceState = VoiceState.WAKE_WORD
+                                resetToWakeWord()
                             }
                             "chat_message" -> {
                                 val message = json.optString("message", "")
@@ -707,17 +747,7 @@ fun MainDashboardScreen() {
                     anamEnabled = anamEnabled,
                     anamApiKey = anamApiKey,
                     anamAvatarId = anamAvatarId,
-                    onClose = {
-                        scope.launch {
-                            try {
-                                val endSignal = JSONObject().put("type", "end_conversation")
-                                room.localParticipant.publishData(endSignal.toString().toByteArray())
-                            } catch (_: Exception) {}
-                            try { room.localParticipant.setMicrophoneEnabled(false) } catch (_: Exception) {}
-                            audioPipeline.start()
-                            voiceState = VoiceState.WAKE_WORD
-                        }
-                    },
+                    onClose = { endConversation() },
                     modifier = Modifier
                         .width(chatCardWidth)
                         .fillMaxHeight()
@@ -729,32 +759,7 @@ fun MainDashboardScreen() {
         if (!isConversation) {
             VoiceBubble(
                 isListening = voiceState == VoiceState.WAKE_WORD,
-                onClick = {
-                    // Manual trigger — simulate wake word detection
-                    if (voiceState == VoiceState.WAKE_WORD) {
-                        voiceState = VoiceState.CONVERSATION
-                        conversationStatus = ConversationStatus.LISTENING
-                        chatMessages.clear()
-                        scope.launch {
-                            audioPipeline.stop()
-                            try {
-                room.localParticipant.setMicrophoneEnabled(true)
-                                val manualSignal = JSONObject().apply {
-                                    put("type", "wake_word_detected")
-                                    put("score", "1.0")
-                                    if (anamEnabled && anamApiKey.isNotEmpty() && anamAvatarId.isNotEmpty()) {
-                                        put("anam_enabled", true)
-                                        put("anam_api_key", anamApiKey)
-                                        put("anam_avatar_id", anamAvatarId)
-                                    }
-                                }
-                                room.localParticipant.publishData(manualSignal.toString().toByteArray())
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Manual trigger failed: ${e.message}")
-                            }
-                        }
-                    }
-                },
+                onClick = { startConversation("1.0") },
                 modifier = Modifier.align(Alignment.BottomEnd)
             )
         }

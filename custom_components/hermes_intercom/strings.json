@@ -7,6 +7,10 @@
         "data": {
           "token_server_url": "Token Server URL"
         }
+      },
+      "confirm_discovery": {
+        "title": "Hermes Intercom Discovered",
+        "description": "A Hermes Intercom token server was found at **{url}**. Do you want to set it up?"
       }
     },
     "error": {

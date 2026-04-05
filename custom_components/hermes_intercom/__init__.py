@@ -13,6 +13,7 @@ import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 import homeassistant.helpers.config_validation as cv
 
@@ -133,6 +134,27 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     return unload_ok
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    device_entry: dr.DeviceEntry,
+) -> bool:
+    """Allow removal of a device that is no longer reported by the token server."""
+    coordinator: HermesIntercomCoordinator = hass.data[DOMAIN][config_entry.entry_id]
+    # Extract the device_id from the device registry identifiers
+    device_ids = {
+        identifier[1]
+        for identifier in device_entry.identifiers
+        if identifier[0] == DOMAIN
+    }
+    # Allow deletion only if the device is NOT currently in the coordinator data
+    # (i.e. the token server no longer reports it)
+    for device_id in device_ids:
+        if device_id in (coordinator.data or {}):
+            return False  # Device is still active — don't allow deletion
+    return True
 
 
 # ---------------------------------------------------------------------------

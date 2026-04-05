@@ -525,6 +525,9 @@ async def main():
             samples = np.frombuffer(pcm_data, dtype=np.int16)
 
             for i in range(0, len(samples), samples_per_frame):
+                if not agent_active:
+                    logger.info("TTS playback cancelled (agent deactivated)")
+                    break
                 frame_data = samples[i:i + samples_per_frame]
                 if len(frame_data) < samples_per_frame:
                     frame_data = np.pad(frame_data, (0, samples_per_frame - len(frame_data)))
@@ -622,11 +625,16 @@ async def main():
     def on_data(data: rtc.DataPacket):
         try:
             msg = _json.loads(data.data.decode())
-            if msg.get("type") == "wake_word_detected":
+            msg_type = msg.get("type", "")
+            if msg_type == "wake_word_detected":
                 score = msg.get("score", 0)
                 logger.info("Received wake_word_detected (score=%s)", score)
                 if not agent_active:
                     asyncio.ensure_future(activate())
+            elif msg_type == "end_conversation":
+                logger.info("Received end_conversation from tablet")
+                if agent_active:
+                    asyncio.ensure_future(deactivate())
         except Exception as e:
             logger.debug("Data parse error: %s", e)
 

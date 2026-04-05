@@ -1,0 +1,33 @@
+# Hermes AIAgent dependencies
+# Installed at image build time so the mounted /opt/hermes code can be imported.
+# Keep in sync with /opt/hermes/requirements.txt on the LXC host.
+
+# Core
+fire
+httpx
+rich
+tenacity
+prompt_toolkit
+pyyaml
+requests
+jinja2
+pydantic>=2.0
+PyJWT[crypto]
+debugpy
+
+# Web tools
+firecrawl-py
+parallel-web>=0.4.2
+
+# Image generation
+fal-client
+
+# TTS
+edge-tts
+
+# Scheduling
+croniter
+
+# Messaging
+python-telegram-bot>=20.0
+discord.py>=2.0

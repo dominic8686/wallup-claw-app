@@ -30,11 +30,13 @@ Endpoints:
 import asyncio
 import json
 import os
+import socket
 import time
 from typing import Any
 
 from aiohttp import web
 from livekit.api import AccessToken, VideoGrants
+from zeroconf import IPVersion, ServiceInfo, Zeroconf
 
 # ---------------------------------------------------------------------------
 # Config
@@ -392,6 +394,47 @@ async def handle_health(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# Zeroconf mDNS advertisement
+# ---------------------------------------------------------------------------
+
+_zeroconf: Zeroconf | None = None
+_service_info: ServiceInfo | None = None
+
+
+def _register_mdns(port: int) -> None:
+    """Register mDNS service so Home Assistant can auto-discover this server."""
+    global _zeroconf, _service_info
+
+    hostname = socket.gethostname()
+    local_ip = socket.gethostbyname(hostname)
+
+    _service_info = ServiceInfo(
+        type_="_hermes-intercom._tcp.local.",
+        name=f"Hermes Intercom ({hostname})._hermes-intercom._tcp.local.",
+        addresses=[socket.inet_aton(local_ip)],
+        port=port,
+        properties={
+            "path": "/devices",
+            "version": "0.1.0",
+        },
+        server=f"{hostname}.local.",
+    )
+    _zeroconf = Zeroconf(ip_version=IPVersion.V4Only)
+    _zeroconf.register_service(_service_info)
+    print(f"  mDNS: registered _hermes-intercom._tcp.local. on {local_ip}:{port}")
+
+
+def _unregister_mdns() -> None:
+    """Unregister mDNS service on shutdown."""
+    global _zeroconf, _service_info
+    if _zeroconf and _service_info:
+        _zeroconf.unregister_service(_service_info)
+        _zeroconf.close()
+        _zeroconf = None
+        _service_info = None
+
+
+# ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
 
@@ -426,4 +469,9 @@ if __name__ == "__main__":
     print(f"Token & registry server listening on :{port}")
     print(f"  LiveKit external URL: {LIVEKIT_EXTERNAL_URL}")
     print(f"  Stale timeout: {STALE_TIMEOUT}s")
-    web.run_app(app, host="0.0.0.0", port=port)
+
+    _register_mdns(port)
+    try:
+        web.run_app(app, host="0.0.0.0", port=port)
+    finally:
+        _unregister_mdns()

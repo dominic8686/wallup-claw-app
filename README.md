@@ -58,11 +58,10 @@ See [AGENTS.md](AGENTS.md) for full architecture, deployment, and operations doc
 ## Components
 
 ### 1. LiveKit Server
-- **Location**: Proxmox LXC container (ID 200) at `192.168.211.153`
-- **Binary**: `/usr/local/bin/livekit-server` (v1.10.1)
-- **Mode**: `--dev` with `--bind 0.0.0.0`
+- **Docker**: `livekit/livekit-server:latest` via Docker Compose on Proxmox LXC
+- **Config**: `livekit.yaml` (mounted into container)
 - **Dev credentials**: API key `devkey`, secret `secret`
-- **Config**: Default dev config (no yaml needed for dev mode)
+- **Networking**: `network_mode: host` — required for WebRTC UDP/ICE to work correctly
 
 ### 2. Voice Agent (`agent.py`)
 - **Location**: `/opt/agent/agent.py` on the LXC container
@@ -123,35 +122,30 @@ The agent sends transcripts to the LiveKit room's data channel using topic `lk-c
 - **IP**: `192.168.211.153` (DHCP on `vmbr0`)
 - **Network**: Same LAN as the tablet (`192.168.211.0/24`)
 
-### Why not Docker on Windows?
-Docker Desktop for Windows runs containers inside a Linux VM. This breaks WebRTC because:
-- `network_mode: host` binds to the VM, not the Windows host
-- UDP port mapping for RTC media doesn't work reliably
+### Why network_mode: host on Proxmox?
+Docker bridge networking breaks WebRTC because:
+- UDP port mapping for RTC media is unreliable
 - ICE candidates advertise Docker-internal IPs that external clients can't reach
 
-Running natively on a Linux LXC container eliminates all these issues.
+`network_mode: host` on the Proxmox LXC (Linux) gives containers direct access to the host network interface, so WebRTC just works.
 
 ## Starting the Services
 
-SSH into Proxmox and run inside the LXC container:
+From Windows, sync the repo to the LXC and bring up all services:
+
+```powershell
+# Sync repo files to LXC (PowerShell)
+$KEY = "C:\Users\domin\.ssh\proxmox_hermes"
+$LXC = "root@192.168.211.153"
+scp -i $KEY -r agent token-server livekit.yaml docker-compose.yml .env "${LXC}:/opt/livekit-voice-agent/"
+```
 
 ```bash
-# 1. Start LiveKit server
-nohup /usr/local/bin/livekit-server --dev --bind 0.0.0.0 > /var/log/livekit.log 2>&1 &
+# On the LXC — start (or restart) all services
+docker compose -f /opt/livekit-voice-agent/docker-compose.yml up -d --build
 
-# 2. Start the voice agent
-export LIVEKIT_URL=ws://localhost:7880
-export LIVEKIT_API_KEY=devkey
-export LIVEKIT_API_SECRET=secret
-export OPENAI_API_KEY=<your-key>
-export OPENROUTER_API_KEY=<your-key>
-nohup /opt/agent/bin/python /opt/agent/agent.py > /var/log/agent.log 2>&1 &
-
-# 3. Start the token server
-LIVEKIT_API_KEY=devkey \
-LIVEKIT_API_SECRET=secret \
-LIVEKIT_EXTERNAL_URL=ws://192.168.211.153:7880 \
-nohup /opt/agent/bin/python /opt/agent/token-server.py > /var/log/token.log 2>&1 &
+# View logs
+docker compose -f /opt/livekit-voice-agent/docker-compose.yml logs -f
 ```
 
 ## Using the App
@@ -166,14 +160,14 @@ nohup /opt/agent/bin/python /opt/agent/token-server.py > /var/log/token.log 2>&1
 ## Logs and Debugging
 
 ```bash
-# Agent logs (VAD, STT, Hermes, TTS activity)
-tail -f /var/log/agent.log
+# All services
+docker compose -f /opt/livekit-voice-agent/docker-compose.yml logs -f
 
-# LiveKit server logs (room/participant events)
-tail -f /var/log/livekit.log
+# Individual service
+docker compose -f /opt/livekit-voice-agent/docker-compose.yml logs -f voice-agent
 
-# Token server logs
-tail -f /var/log/token.log
+# Container status
+docker compose -f /opt/livekit-voice-agent/docker-compose.yml ps
 
 # Android app logs (from Windows)
 adb logcat -s "livekit","LiveKit"
@@ -198,7 +192,7 @@ livekit-voice-agent/
 │       │   └── VoiceAssistantScreen.kt  # Voice UI with chat
 │       └── viewmodel/
 │           └── VoiceAssistantViewModel.kt
-├── docker-compose.yml        # Docker Compose (unused — was for Windows, had networking issues)
+├── docker-compose.yml        # Docker Compose (runs on Proxmox LXC with network_mode: host)
 ├── livekit.yaml              # LiveKit server config
 ├── .env                      # API keys
 └── README.md                 # This file

@@ -1,11 +1,11 @@
+# Running on Proxmox LXC (Linux) — network_mode: host is required for WebRTC.
+# Docker bridge networking breaks ICE candidate resolution for UDP media streams.
+# With host mode, all services bind directly to the LXC's network interface.
+
 services:
   livekit-server:
     image: livekit/livekit-server:latest
-    ports:
-      - "7880:7880"
-      - "7881:7881"
-      - "7882:7882/udp"
-      - "50100-50120:50100-50120/udp"
+    network_mode: host
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml
     command: ["--config", "/etc/livekit.yaml"]
@@ -13,26 +13,32 @@ services:
 
   voice-agent:
     build: ./agent
+    network_mode: host
     environment:
-      - LIVEKIT_URL=ws://livekit-server:7880
+      - LIVEKIT_URL=ws://localhost:7880
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
-      - ELEVEN_API_KEY=${ELEVENLABS_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - HASS_URL=${HASS_URL}
+      - HASS_TOKEN=${HASS_TOKEN}
+    volumes:
+      # Hermes AI brain — cloned at /opt/hermes on the LXC host
+      - /opt/hermes:/opt/hermes:ro
+      # Hermes config + .env (API keys, HA token, etc.)
+      - /root/.hermes:/root/.hermes:ro
     depends_on:
       - livekit-server
     restart: unless-stopped
 
   token-server:
     build: ./token-server
-    ports:
-      - "8090:8090"
+    network_mode: host
     environment:
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
-      - LIVEKIT_URL=ws://livekit-server:7880
-      - LIVEKIT_EXTERNAL_URL=ws://192.168.211.55:7880
+      - LIVEKIT_EXTERNAL_URL=ws://${CT200_HOST}:7880
+      - PORT=8090
     depends_on:
       - livekit-server
     restart: unless-stopped

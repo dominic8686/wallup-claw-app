@@ -4,7 +4,7 @@ from datetime import datetime
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -17,13 +17,24 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    entities = []
-    for device_id in coordinator.data:
-        entities.append(TabletCallStateSensor(coordinator, device_id, entry))
-        entities.append(TabletLastActivitySensor(coordinator, device_id, entry))
-    # Global sensors
-    entities.append(LastCallSensor(coordinator, entry))
-    async_add_entities(entities, True)
+    known_device_ids: set[str] = set()
+
+    # Global sensor (created once)
+    async_add_entities([LastCallSensor(coordinator, entry)])
+
+    @callback
+    def _async_add_new_devices() -> None:
+        new_entities = []
+        for device_id in coordinator.data or {}:
+            if device_id not in known_device_ids:
+                known_device_ids.add(device_id)
+                new_entities.append(TabletCallStateSensor(coordinator, device_id, entry))
+                new_entities.append(TabletLastActivitySensor(coordinator, device_id, entry))
+        if new_entities:
+            async_add_entities(new_entities)
+
+    _async_add_new_devices()
+    entry.async_on_unload(coordinator.async_add_listener(_async_add_new_devices))
 
 
 class TabletCallStateSensor(CoordinatorEntity, SensorEntity):
