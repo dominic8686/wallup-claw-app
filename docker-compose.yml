@@ -6,6 +6,9 @@ services:
   livekit-server:
     image: livekit/livekit-server:latest
     network_mode: host
+    environment:
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml
     command: ["--config", "/etc/livekit.yaml"]

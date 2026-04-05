@@ -26,6 +26,8 @@ import io.livekit.android.example.voiceassistant.screen.VoiceAssistantRoute
 import io.livekit.android.example.voiceassistant.screen.VoiceAssistantScreen
 import io.livekit.android.example.voiceassistant.settings.AppSettings
 import io.livekit.android.example.voiceassistant.settings.AppUpdater
+import io.livekit.android.example.voiceassistant.settings.UpdateInterval
+import android.util.Log
 import io.livekit.android.example.voiceassistant.ui.theme.LiveKitVoiceAssistantExampleTheme
 import io.livekit.android.example.voiceassistant.viewmodel.VoiceAssistantViewModel
 import io.livekit.android.util.LoggingLevel
@@ -42,14 +44,30 @@ class MainActivity : ComponentActivity() {
         // Initialize bundled emoji font so emojis render on all devices
         EmojiCompat.init(BundledEmojiCompatConfig(this))
 
-        // Auto-update check
+        // Auto-update check (respects configured interval)
         val appSettings = AppSettings(this)
         lifecycleScope.launch {
             val autoUpdate = appSettings.autoUpdateEnabled.first()
+            Log.i("AutoUpdate", "enabled=$autoUpdate, version=${BuildConfig.VERSION_NAME}")
             if (autoUpdate) {
-                val info = AppUpdater.checkForUpdate(BuildConfig.VERSION_NAME)
-                if (info != null && info.isNewer) {
-                    AppUpdater.downloadAndInstall(this@MainActivity, info.apkDownloadUrl)
+                val lastCheck = appSettings.lastUpdateCheck.first()
+                val intervalId = appSettings.updateCheckInterval.first()
+                val interval = UpdateInterval.fromId(intervalId)
+                val now = System.currentTimeMillis()
+                val elapsed = now - lastCheck
+                Log.i("AutoUpdate", "interval=${interval.displayName} (${interval.millis}ms), elapsed=${elapsed}ms")
+                if (elapsed >= interval.millis) {
+                    Log.i("AutoUpdate", "Checking for update...")
+                    appSettings.setLastUpdateCheck(now)
+                    val info = AppUpdater.checkForUpdate(BuildConfig.VERSION_NAME)
+                    if (info != null && info.isNewer) {
+                        Log.i("AutoUpdate", "Update found: v${info.latestVersion}, downloading...")
+                        AppUpdater.downloadAndInstall(this@MainActivity, info.apkDownloadUrl)
+                    } else {
+                        Log.i("AutoUpdate", "No update available (latest=${info?.latestVersion})")
+                    }
+                } else {
+                    Log.i("AutoUpdate", "Skipping, next check in ${(interval.millis - elapsed) / 1000}s")
                 }
             }
         }

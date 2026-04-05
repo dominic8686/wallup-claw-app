@@ -40,10 +40,8 @@ fun SettingsDrawer(
     val haUrl by settings.haUrl.collectAsState(initial = AppSettings.DEFAULT_HA_URL)
     val livekitUrl by settings.livekitServerUrl.collectAsState(initial = AppSettings.DEFAULT_LIVEKIT_URL)
     val tokenUrl by settings.tokenServerUrl.collectAsState(initial = AppSettings.DEFAULT_TOKEN_SERVER_URL)
-    val anamEnabled by settings.anamEnabled.collectAsState(initial = false)
-    val anamApiKey by settings.anamApiKey.collectAsState(initial = "")
-    val anamAvatarId by settings.anamAvatarId.collectAsState(initial = "")
-    val deviceId by settings.deviceId.collectAsState(initial = AppSettings.DEFAULT_DEVICE_ID)
+    val avatarEnabled by settings.avatarEnabled.collectAsState(initial = false)
+    val deviceId
     val deviceDisplayName by settings.deviceDisplayName.collectAsState(initial = AppSettings.DEFAULT_DEVICE_DISPLAY_NAME)
     val deviceRoomLocation by settings.deviceRoomLocation.collectAsState(initial = AppSettings.DEFAULT_DEVICE_ROOM_LOCATION)
     val autoUpdateEnabled by settings.autoUpdateEnabled.collectAsState(initial = false)
@@ -292,44 +290,17 @@ fun SettingsDrawer(
                 Text("Avatar", fontWeight = FontWeight.Bold, fontSize = 16.sp)
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Enable Avatar", fontSize = 14.sp, modifier = Modifier.weight(1f))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Enable Avatar", fontSize = 14.sp)
+                        Text(
+                            "TalkingHead.js — served from token server",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     Switch(
-                        checked = anamEnabled,
-                        onCheckedChange = { scope.launch { settings.setAnamEnabled(it) } }
-                    )
-                }
-
-                if (anamEnabled) {
-                    var apiKeyEdit by remember(anamApiKey) { mutableStateOf(anamApiKey) }
-                    OutlinedTextField(
-                        value = apiKeyEdit,
-                        onValueChange = { apiKeyEdit = it },
-                        label = { Text("Anam API Key") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        trailingIcon = {
-                            if (apiKeyEdit != anamApiKey) {
-                                TextButton(onClick = {
-                                    scope.launch { settings.setAnamApiKey(apiKeyEdit) }
-                                }) { Text("Save") }
-                            }
-                        }
-                    )
-
-                    var avatarIdEdit by remember(anamAvatarId) { mutableStateOf(anamAvatarId) }
-                    OutlinedTextField(
-                        value = avatarIdEdit,
-                        onValueChange = { avatarIdEdit = it },
-                        label = { Text("Avatar ID") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        trailingIcon = {
-                            if (avatarIdEdit != anamAvatarId) {
-                                TextButton(onClick = {
-                                    scope.launch { settings.setAnamAvatarId(avatarIdEdit) }
-                                }) { Text("Save") }
-                            }
-                        }
+                        checked = avatarEnabled,
+                        onCheckedChange = { scope.launch { settings.setAvatarEnabled(it) } }
                     )
                 }
 

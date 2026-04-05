@@ -12,6 +12,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.runtime.MutableState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -47,9 +48,9 @@ enum class ConversationStatus {
 fun ConversationCard(
     messages: List<ChatMessage>,
     status: ConversationStatus,
-    anamApiKey: String = "",
-    anamAvatarId: String = "",
-    anamEnabled: Boolean = false,
+    avatarEnabled: Boolean = false,
+    avatarUrl: String = "",
+    avatarWebViewRef: MutableState<WebView?>? = null,
     onClose: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -113,76 +114,8 @@ fun ConversationCard(
             )
         }
 
-        // Avatar WebView (Anam JS SDK)
-        if (anamEnabled && anamApiKey.isNotEmpty() && anamAvatarId.isNotEmpty()) {
-            val avatarHtml = remember(anamApiKey, anamAvatarId) {
-                """
-                <!DOCTYPE html>
-                <html><head>
-                <meta name="viewport" content="width=device-width,initial-scale=1">
-                <style>
-                    * { margin:0; padding:0; }
-                    body { background:#000; overflow:hidden; }
-                    video, #anamVideo { width:100%; height:100%; object-fit:cover; }
-                    audio { display:none; }
-                </style>
-                </head><body>
-                <video id="anamVideo" autoplay playsinline muted></video>
-                <audio id="anamAudio" autoplay></audio>
-                <script src="https://unpkg.com/@anam-ai/js-sdk@4.12.0/dist/umd/anam.js"></script>
-                <script>
-                    const { createClient } = window.anam;
-                    // Get session token with no brain (visual-only avatar)
-                    async function startAvatar() {
-                        try {
-                            const resp = await fetch('https://api.anam.ai/v1/auth/session-token', {
-                                method: 'POST',
-                                headers: {
-                                    'Content-Type': 'application/json',
-                                    'Authorization': 'Bearer ${anamApiKey}',
-                                },
-                                body: JSON.stringify({
-                                    personaConfig: {
-                                        name: 'Hermes',
-                                        avatarId: '${anamAvatarId}',
-                                        voiceId: '6bfbe25a-979d-40f3-a92b-5394170af54b',
-                                        llmId: 'CUSTOMER_CLIENT_V1',
-                                        systemPrompt: 'You are a visual avatar. Do not respond to user input.',
-                                    },
-                                }),
-                            });
-                            const data = await resp.json();
-                            const client = createClient(data.sessionToken, { disableClientAudio: true });
-                            await client.streamToVideoAndAudioElements('anamVideo', 'anamAudio');
-                            window.anamClient = client;
-                        } catch(e) {
-                            console.error('Avatar start failed:', e);
-                        }
-                    }
-                    startAvatar();
-                    // Expose talk() for Android to call
-                    window.anamTalk = function(text) {
-                        try { if(window.anamClient) window.anamClient.talk(text); } catch(e) { console.error('anamTalk error:', e); }
-                    };
-                </script>
-                </body></html>
-                """.trimIndent()
-            }
-
-            val webViewRef = remember { mutableStateOf<WebView?>(null) }
-
-            // When agent speaks, send text to avatar
-            val lastAgentMessage = messages.lastOrNull { !it.isUser }?.text
-            LaunchedEffect(lastAgentMessage) {
-                if (lastAgentMessage != null) {
-                    webViewRef.value?.evaluateJavascript(
-                        "if(window.anamTalk) window.anamTalk('" +
-                            lastAgentMessage.replace("'", "\\'").replace("\n", " ") +
-                            "');", null
-                    )
-                }
-            }
-
+        // Avatar WebView (TalkingHead.js)
+        if (avatarEnabled && avatarUrl.isNotEmpty()) {
             AndroidView(
                 factory = { ctx ->
                     WebView(ctx).apply {
@@ -195,14 +128,8 @@ fun ConversationCard(
                         settings.mediaPlaybackRequiresUserGesture = false
                         webViewClient = WebViewClient()
                         webChromeClient = WebChromeClient()
-                        loadDataWithBaseURL(
-                            "https://api.anam.ai",
-                            avatarHtml,
-                            "text/html",
-                            "UTF-8",
-                            null
-                        )
-                        webViewRef.value = this
+                        loadUrl(avatarUrl)
+                        avatarWebViewRef?.value = this
                     }
                 },
                 modifier = Modifier

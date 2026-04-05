@@ -74,10 +74,8 @@ fun MainDashboardScreen() {
     val haUrl by appSettings.haUrl.collectAsState(initial = AppSettings.DEFAULT_HA_URL)
     val livekitUrl by appSettings.livekitServerUrl.collectAsState(initial = AppSettings.DEFAULT_LIVEKIT_URL)
     val tokenServerUrl by appSettings.tokenServerUrl.collectAsState(initial = AppSettings.DEFAULT_TOKEN_SERVER_URL)
-    val anamEnabled by appSettings.anamEnabled.collectAsState(initial = false)
-    val anamApiKey by appSettings.anamApiKey.collectAsState(initial = "")
-    val anamAvatarId by appSettings.anamAvatarId.collectAsState(initial = "")
-    val deviceId by appSettings.deviceId.collectAsState(initial = "__LOADING__")
+    val avatarEnabled by appSettings.avatarEnabled.collectAsState(initial = false)
+    val deviceId
     val deviceDisplayName by appSettings.deviceDisplayName.collectAsState(initial = AppSettings.DEFAULT_DEVICE_DISPLAY_NAME)
     val deviceRoomLocation by appSettings.deviceRoomLocation.collectAsState(initial = AppSettings.DEFAULT_DEVICE_ROOM_LOCATION)
 
@@ -104,8 +102,8 @@ fun MainDashboardScreen() {
     val room = remember { LiveKit.create(context) }
     var roomConnected by remember { mutableStateOf(false) }
 
-    // --- Avatar ---
-    var avatarVideoTrack by remember { mutableStateOf<io.livekit.android.room.track.VideoTrack?>(null) }
+    // --- Avatar WebView ref (for JS bridge calls into TalkingHead.js) ---
+    val avatarWebViewRef = remember { mutableStateOf<WebView?>(null) }
 
     // --- Ending fallback job ---
     var endingTimeoutJob by remember { mutableStateOf<Job?>(null) }
@@ -114,7 +112,7 @@ fun MainDashboardScreen() {
     val isConversation = voiceState == VoiceState.CONVERSATION || voiceState == VoiceState.ENDING
 
     // --- Shared conversation lifecycle functions ---
-    val startConversation: (String) -> Unit = remember(room, audioPipeline, anamEnabled, anamApiKey, anamAvatarId) {
+    val startConversation: (String) -> Unit = remember(room, audioPipeline, avatarEnabled) {
         { score: String ->
             if (voiceState == VoiceState.WAKE_WORD) {
                 voiceState = VoiceState.CONVERSATION
@@ -128,14 +126,10 @@ fun MainDashboardScreen() {
                         val signalJson = JSONObject().apply {
                             put("type", "wake_word_detected")
                             put("score", score)
-                            if (anamEnabled && anamApiKey.isNotEmpty() && anamAvatarId.isNotEmpty()) {
-                                put("anam_enabled", true)
-                                put("anam_api_key", anamApiKey)
-                                put("anam_avatar_id", anamAvatarId)
-                            }
+                            put("avatar_enabled", avatarEnabled)
                         }
                         room.localParticipant.publishData(signalJson.toString().toByteArray())
-                        Log.i(TAG, "Sent wake_word_detected (score=$score, avatar=$anamEnabled)")
+                        Log.i(TAG, "Sent wake_word_detected (score=$score, avatar=$avatarEnabled)")
                     } catch (e: Exception) {
                         Log.e(TAG, "startConversation failed: ${e.message}")
                     }
@@ -451,22 +445,6 @@ fun MainDashboardScreen() {
                         Log.d(TAG, "Transcription [${if (isUser) "user" else "agent"}]: ${segment.text}")
                     }
                 }
-                is RoomEvent.TrackSubscribed -> {
-                    val participant = event.participant
-                    val track = event.track
-                    if (participant.identity.toString().startsWith("anam") &&
-                        track is io.livekit.android.room.track.VideoTrack) {
-                        avatarVideoTrack = track
-                        Log.i(TAG, "Avatar video track subscribed")
-                    }
-                }
-                is RoomEvent.TrackUnsubscribed -> {
-                    val track = event.track
-                    if (track == avatarVideoTrack) {
-                        avatarVideoTrack = null
-                        Log.i(TAG, "Avatar video track unsubscribed")
-                    }
-                }
                 is RoomEvent.DataReceived -> {
                     try {
                         val text = event.data.toString(Charsets.UTF_8)
@@ -477,6 +455,21 @@ fun MainDashboardScreen() {
                             "conversation_ended" -> {
                                 Log.i(TAG, "Server sent conversation_ended")
                                 resetToWakeWord()
+                            }
+                            "agent_speak" -> {
+                                // TalkingHead.js avatar: route text to the avatar WebView
+                                val text = json.optString("text", "")
+                                if (text.isNotEmpty()) {
+                                    val escaped = text
+                                        .replace("\\", "\\\\")
+                                        .replace("'", "\\'")
+                                        .replace("\n", " ")
+                                    avatarWebViewRef.value?.evaluateJavascript(
+                                        "if(window.talkingHeadSpeak) window.talkingHeadSpeak('$escaped');", null
+                                    )
+                                    conversationStatus = ConversationStatus.SPEAKING
+                                    Log.d(TAG, "Avatar speak: ${text.take(60)}")
+                                }
                             }
                             "chat_message" -> {
                                 val message = json.optString("message", "")
@@ -744,9 +737,9 @@ fun MainDashboardScreen() {
                 ConversationCard(
                     messages = chatMessages,
                     status = conversationStatus,
-                    anamEnabled = anamEnabled,
-                    anamApiKey = anamApiKey,
-                    anamAvatarId = anamAvatarId,
+                    avatarEnabled = avatarEnabled,
+                    avatarUrl = if (avatarEnabled) "$tokenServerUrl/avatar" else "",
+                    avatarWebViewRef = avatarWebViewRef,
                     onClose = { endConversation() },
                     modifier = Modifier
                         .width(chatCardWidth)
