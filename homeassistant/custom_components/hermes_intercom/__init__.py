@@ -32,6 +32,7 @@ from .const import (
     SERVICE_HANGUP,
     SERVICE_SET_DND,
     SERVICE_CONFIGURE_DEVICE,
+    SERVICE_START_CONVERSATION,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -352,5 +353,26 @@ def _register_services(hass: HomeAssistant, coordinator: HermesIntercomCoordinat
             vol.Required("target"): cv.string,
             vol.Optional("display_name"): cv.string,
             vol.Optional("room_location"): cv.string,
+        }),
+    )
+
+    async def handle_start_conversation(call: ServiceCall) -> None:
+        """Handle hermes_intercom.start_conversation service."""
+        target = call.data["target"]
+        result = await coordinator._post_signal({
+            "type": "start_conversation",
+            "from": "homeassistant",
+            "to": target,
+        })
+        if result.get("ok"):
+            _LOGGER.info("Start conversation sent to %s", target)
+        else:
+            _LOGGER.warning("Start conversation failed for %s: %s", target, result.get("error"))
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_START_CONVERSATION,
+        handle_start_conversation,
+        schema=vol.Schema({
+            vol.Required("target"): cv.string,
         }),
     )

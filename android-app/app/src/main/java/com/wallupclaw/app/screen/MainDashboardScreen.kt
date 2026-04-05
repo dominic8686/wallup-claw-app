@@ -52,6 +52,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.runtime.snapshotFlow
 import kotlinx.serialization.Serializable
+import android.content.Context
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
 import org.json.JSONObject
 
 private const val TAG = "MainDashboard"
@@ -207,6 +211,23 @@ fun MainDashboardScreen() {
                         resetToWakeWord()
                     }
                 }
+            }
+        }
+    }
+
+    // --- Request battery optimization exemption (one-time) ---
+    LaunchedEffect(Unit) {
+        val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (!pm.isIgnoringBatteryOptimizations(context.packageName)) {
+            try {
+                val intent = android.content.Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:${context.packageName}")
+                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+                Log.i(TAG, "Requested battery optimization exemption")
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not request battery optimization exemption: ${e.message}")
             }
         }
     }
@@ -381,7 +402,11 @@ fun MainDashboardScreen() {
                 val token = json.getString("token")
                 room.connect(livekitUrl, token)
                 roomConnected = true
-                Log.i(TAG, "LiveKit connected as '$effectiveDeviceId'")
+                // Force loudspeaker — LiveKit defaults to earpiece via MODE_IN_COMMUNICATION
+                val am = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+                @Suppress("DEPRECATION")
+                am.isSpeakerphoneOn = true
+                Log.i(TAG, "LiveKit connected as '$effectiveDeviceId', speakerphone forced on")
             } catch (e: Exception) {
                 Log.e(TAG, "LiveKit connect failed: ${e.message}, retrying in 10s...")
                 delay(10_000)
@@ -415,6 +440,15 @@ fun MainDashboardScreen() {
     }
     DisposableEffect(tts) {
         onDispose { tts.shutdown() }
+    }
+
+    // --- Remote conversation trigger from HA ---
+    val pendingConversation by intercomManager.pendingConversation.collectAsState()
+    LaunchedEffect(pendingConversation) {
+        if (!pendingConversation) return@LaunchedEffect
+        Log.i(TAG, "Remote conversation trigger received")
+        startConversation("remote")
+        intercomManager.clearConversation()
     }
 
     // --- Background heartbeat every 15s + config polling ---
@@ -461,9 +495,82 @@ fun MainDashboardScreen() {
                         appSettings.setDeviceRoomLocation(config.getString("room_location"))
                         Log.i(TAG, "Remote config: room_location = ${config.getString("room_location")}")
                     }
+                    if (config.has("security_camera_enabled")) {
+                        val enabled = config.getBoolean("security_camera_enabled")
+                        appSettings.setSecurityCameraEnabled(enabled)
+                        deviceStateManager.setSecurityCameraEnabled(enabled)
+                        Log.i(TAG, "Remote config: security_camera_enabled = $enabled")
+                    }
+                    if (config.has("auto_answer_calls")) {
+                        appSettings.setAutoAnswerCalls(config.getBoolean("auto_answer_calls"))
+                        Log.i(TAG, "Remote config: auto_answer_calls = ${config.getBoolean("auto_answer_calls")}")
+                    }
+                    if (config.has("auto_start_on_boot")) {
+                        appSettings.setAutoStartOnBoot(config.getBoolean("auto_start_on_boot"))
+                        Log.i(TAG, "Remote config: auto_start_on_boot = ${config.getBoolean("auto_start_on_boot")}")
+                    }
+                    if (config.has("avatar_enabled")) {
+                        appSettings.setAvatarEnabled(config.getBoolean("avatar_enabled"))
+                        Log.i(TAG, "Remote config: avatar_enabled = ${config.getBoolean("avatar_enabled")}")
+                    }
+                    if (config.has("wakeword_model")) {
+                        appSettings.setWakeWordModel(config.getString("wakeword_model"))
+                        Log.i(TAG, "Remote config: wakeword_model = ${config.getString("wakeword_model")}")
+                    }
+                    if (config.has("wakeword_sensitivity")) {
+                        appSettings.setWakeWordSensitivity(config.getDouble("wakeword_sensitivity").toFloat())
+                        Log.i(TAG, "Remote config: wakeword_sensitivity = ${config.getDouble("wakeword_sensitivity")}")
+                    }
+                    if (config.has("call_mode")) {
+                        appSettings.setCallMode(com.wallupclaw.app.settings.CallMode.fromValue(config.getString("call_mode")))
+                        Log.i(TAG, "Remote config: call_mode = ${config.getString("call_mode")}")
+                    }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Config poll failed: ${e.message}")
+            }
+        }
+    }
+
+    // --- Audio diagnostics logger (every 10s while connected) ---
+    LaunchedEffect(roomConnected) {
+        if (!roomConnected) return@LaunchedEffect
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+        while (true) {
+            delay(10_000)
+            try {
+                // Android audio state
+                val mode = when (am.mode) {
+                    android.media.AudioManager.MODE_NORMAL -> "NORMAL"
+                    android.media.AudioManager.MODE_IN_COMMUNICATION -> "IN_COMMUNICATION"
+                    android.media.AudioManager.MODE_IN_CALL -> "IN_CALL"
+                    android.media.AudioManager.MODE_RINGTONE -> "RINGTONE"
+                    else -> "UNKNOWN(${am.mode})"
+                }
+                @Suppress("DEPRECATION")
+                val spk = am.isSpeakerphoneOn
+                Log.i("AudioDiag", "Android: mode=$mode speaker=$spk vol=${am.getStreamVolume(android.media.AudioManager.STREAM_VOICE_CALL)}/${am.getStreamMaxVolume(android.media.AudioManager.STREAM_VOICE_CALL)} music=${am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)}/${am.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)}")
+
+                // WebRTC subscriber stats (incoming audio from agent)
+                val statsKeys = listOf("mimeType", "clockRate", "channels", "bytesReceived",
+                    "packetsReceived", "packetsLost", "jitter", "audioLevel",
+                    "totalSamplesReceived", "concealedSamples", "jitterBufferDelay",
+                    "jitterBufferEmittedCount", "codecId", "kind")
+                room.getSubscriberRTCStats { report ->
+                    report.statsMap.forEach { entry ->
+                        val stat = entry.value
+                        if (stat.type == "inbound-rtp" || stat.type == "codec") {
+                            val sb = StringBuilder("WebRTC ${stat.type}: ")
+                            for (key in statsKeys) {
+                                val v = stat.members[key]
+                                if (v != null) sb.append("$key=$v ")
+                            }
+                            Log.i("AudioDiag", sb.toString().trim())
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("AudioDiag", "Stats collection failed: ${e.message}")
             }
         }
     }

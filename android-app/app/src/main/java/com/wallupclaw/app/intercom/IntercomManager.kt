@@ -46,6 +46,13 @@ class IntercomManager(
     /** Call after TTS has spoken the announcement. */
     fun clearAnnouncement() { _pendingAnnouncement.value = null }
 
+    /** Emits when HA requests starting a conversation. */
+    private val _pendingConversation = MutableStateFlow(false)
+    val pendingConversation: StateFlow<Boolean> = _pendingConversation
+
+    /** Call after conversation has been started. */
+    fun clearConversation() { _pendingConversation.value = false }
+
     private var pollJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -219,6 +226,11 @@ class IntercomManager(
                     Log.i(TAG, "Announcement received: ${message.take(50)}")
                     _pendingAnnouncement.value = message
                 }
+            }
+
+            "start_conversation" -> {
+                Log.i(TAG, "Start conversation requested by ${signal.optString("from", "?")}")
+                _pendingConversation.value = true
             }
         }
     }

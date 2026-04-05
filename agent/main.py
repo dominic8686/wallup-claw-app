@@ -66,7 +66,7 @@ _device_frames: dict[str, bytes] = {}
 VISION_MODEL = os.environ.get("VISION_MODEL", "gpt-4o")
 # Always attach the camera frame to every utterance during conversation.
 # When False, only explicit vision triggers attach the frame.
-VISION_ALWAYS_ATTACH = os.environ.get("VISION_ALWAYS_ATTACH", "true").strip().lower() == "true"
+VISION_ALWAYS_ATTACH = os.environ.get("VISION_ALWAYS_ATTACH", "false").strip().lower() == "true"
 
 # RTSP bridge: publish camera streams to mediamtx for HA Generic Camera
 RTSP_ENABLED = os.environ.get("RTSP_ENABLED", "true").strip().lower() == "true"
@@ -528,7 +528,12 @@ async def text_to_speech(text: str, output_path: str) -> bool:
 # ---------------------------------------------------------------------------
 
 class HermesBackend:
-    """Full Hermes AIAgent — tools, memory, HA, MCP servers."""
+    """Full Hermes AIAgent — tools, memory, HA, MCP servers.
+
+    Designed to be shared across multiple TabletSessions. Each tablet
+    passes its own conversation history to chat(), keeping conversations
+    isolated while sharing the same agent, tools, and MCP connections.
+    """
 
     def __init__(self):
         try:
@@ -541,19 +546,21 @@ class HermesBackend:
         self._agent = AIAgent(
             model=os.environ.get("HERMES_MODEL", "gpt-4o-mini"),
             quiet_mode=True,
-            enabled_toolsets=["web", "homeassistant", "memory", "terminal"],
         )
-        self._history = []
-        logger.info("HermesBackend ready (model=%s)", os.environ.get("HERMES_MODEL", "gpt-4o-mini"))
+        logger.info("HermesBackend ready (model=%s, tools=%d)",
+                    os.environ.get("HERMES_MODEL", "gpt-4o-mini"), len(self._agent.tools))
 
-    async def chat(self, user_message: str) -> str:
+    async def chat(self, user_message: str, history: list | None = None) -> tuple[str, list]:
+        """Run a conversation turn. Returns (response, updated_history)."""
+        chat_history = history if history is not None else []
         result = await asyncio.to_thread(
             self._agent.run_conversation,
             user_message=user_message,
-            conversation_history=self._history,
+            conversation_history=chat_history,
         )
-        self._history = result.get("messages", [])
-        return result.get("final_response", "I'm not sure how to respond.")
+        new_history = result.get("messages", [])
+        response = result.get("final_response", "I'm not sure how to respond.")
+        return response, new_history
 
 
 class OpenRouterBackend:
@@ -582,31 +589,39 @@ class OpenRouterBackend:
             api_key=api_key,
             base_url="https://openrouter.ai/api/v1",
         )
-        self._history = []
         logger.info("OpenRouterBackend ready (model=%s)", self._model)
 
-    async def chat(self, user_message: str) -> str:
-        self._history.append({"role": "user", "content": user_message})
+    async def chat(self, user_message: str, history: list | None = None) -> tuple[str, list]:
+        """Run a conversation turn. Returns (response, updated_history)."""
+        chat_history = history if history is not None else []
+        chat_history.append({"role": "user", "content": user_message})
         resp = await asyncio.to_thread(
             self._client.chat.completions.create,
             model=self._model,
             messages=[
                 {"role": "system", "content": self.SYSTEM_PROMPT},
-                *self._history[-20:],
+                *chat_history[-20:],
             ],
         )
         reply = resp.choices[0].message.content
-        self._history.append({"role": "assistant", "content": reply})
-        return reply
+        chat_history.append({"role": "assistant", "content": reply})
+        return reply, chat_history
 
 
-def create_backend():
-    """Instantiate the backend selected by AGENT_MODE. Fails hard on misconfiguration."""
-    if AGENT_MODE == "hermes":
-        return HermesBackend()
-    if AGENT_MODE == "openrouter":
-        return OpenRouterBackend()
-    # unreachable — guarded at module load above
+_shared_backend = None
+
+
+def get_shared_backend():
+    """Get or create the shared backend singleton. Created once at startup."""
+    global _shared_backend
+    if _shared_backend is None:
+        if AGENT_MODE == "hermes":
+            _shared_backend = HermesBackend()
+        elif AGENT_MODE == "openrouter":
+            _shared_backend = OpenRouterBackend()
+        else:
+            raise SystemExit(f"Invalid AGENT_MODE={AGENT_MODE!r}")
+    return _shared_backend
 
 # ---------------------------------------------------------------------------
 # VAD (Voice Activity Detection) using Silero
@@ -872,7 +887,7 @@ class TabletSession:
     conversation state, TTS track, and video frame buffer.
     """
 
-    SILENCE_TIMEOUT = 30  # seconds of no speech before going back to IDLE
+    SILENCE_TIMEOUT = 60  # seconds of no speech before going back to IDLE
 
     def __init__(self, device_id: str, url: str, api_key: str, api_secret: str):
         self.device_id = device_id
@@ -882,7 +897,8 @@ class TabletSession:
         self.api_secret = api_secret
 
         self.room = rtc.Room()
-        self.backend = create_backend()
+        self.backend = get_shared_backend()
+        self._chat_history = []  # per-tablet conversation history
         self.vad = SimpleVAD()
         self.multimodal = MultimodalHandler(device_id)
 
@@ -892,6 +908,13 @@ class TabletSession:
         self._running = True
 
         self.tts_source: rtc.AudioSource | None = None
+
+    async def chat(self, user_message: str) -> str:
+        """Chat via shared backend with per-tablet conversation history."""
+        response, self._chat_history = await self.backend.chat(
+            user_message, history=self._chat_history
+        )
+        return response
 
     def log(self, level: str, msg: str, *args):
         getattr(logger, level)(f"[{self.device_id}] {msg}", *args)
@@ -986,6 +1009,7 @@ class TabletSession:
     async def _deactivate(self):
         """End conversation, signal tablet to return to wake word mode."""
         self.agent_active = False
+        self._chat_history = []  # clear per-tablet history
         self.multimodal.reset()
         self.log("info", "Conversation IDLE")
         await relay_transcript(self.room, "system", "💤 Conversation ended")
@@ -1105,7 +1129,7 @@ class TabletSession:
             await relay_transcript(self.room, "user", transcript)
 
             # MultimodalHandler decides: vision model (with frame) or text backend
-            response = await self.multimodal.chat(transcript, text_backend=self.backend)
+            response = await self.multimodal.chat(transcript, text_backend=self)
 
             self.log("info", "Response: %s", response[:100])
             await relay_transcript(self.room, "assistant", response)
@@ -1114,6 +1138,7 @@ class TabletSession:
         except Exception as e:
             self.log("error", "Utterance error: %s", e, exc_info=True)
         finally:
+            self.last_speech_time = _time.monotonic()  # reset timer after agent responds
             self.processing = False
 
     async def _proactive_vision(self, context: str = ""):
@@ -1178,6 +1203,21 @@ async def main():
     sessions: dict[str, TabletSession] = {}  # device_id -> TabletSession
 
     logger.info("Multi-tablet agent starting (polling %s every %ds)", TOKEN_SERVER_URL, DEVICE_POLL_INTERVAL)
+
+    # Initialize shared backend FIRST — MCP servers (npx) need time to connect.
+    # This blocks briefly at startup but ensures tools are ready before any tablet talks.
+    logger.info("Initializing shared backend (%s)...", AGENT_MODE)
+    backend = get_shared_backend()
+    # MCP tools register asynchronously after AIAgent.__init__. Wait a bit
+    # then refresh the agent's tool list to pick up MCP tools.
+    await asyncio.sleep(10)
+    if hasattr(backend, '_agent'):
+        from model_tools import get_tool_definitions
+        backend._agent.tools = get_tool_definitions(quiet_mode=True)
+        backend._agent.valid_tool_names = {t["function"]["name"] for t in backend._agent.tools}
+        logger.info("Shared backend ready (tools=%d after MCP refresh)", len(backend._agent.tools))
+    else:
+        logger.info("Shared backend ready")
 
     # Start shared services
     asyncio.ensure_future(ha_event_listener())

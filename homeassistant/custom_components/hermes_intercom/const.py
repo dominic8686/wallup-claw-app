@@ -28,6 +28,7 @@ SERVICE_HANGUP = "hangup"
 SERVICE_ANSWER = "answer"
 SERVICE_SET_DND = "set_dnd"
 SERVICE_CONFIGURE_DEVICE = "configure_device"
+SERVICE_START_CONVERSATION = "start_conversation"
 
 # Platforms
-PLATFORMS = ["binary_sensor", "sensor", "switch", "text"]
+PLATFORMS = ["binary_sensor", "sensor", "switch", "text", "select", "number", "button"]

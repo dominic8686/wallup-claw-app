@@ -259,6 +259,8 @@ class DlnaRendererService : Service() {
 
     private inner class UpnpHttpServer(port: Int) : NanoHTTPD(port) {
 
+        override fun useGzipWhenAccepted(r: Response?): Boolean = false  // Disable GZIP to prevent crash
+
         override fun serve(session: IHTTPSession): Response {
             val uri = session.uri
             val method = session.method
