@@ -64,28 +64,53 @@ class DlnaRendererService : Service() {
         val baseUrl = "http://$localIp:$HTTP_PORT"
         val descriptionUrl = "$baseUrl/description.xml"
 
-        // Start UPnP HTTP server (gracefully handle port already in use)
-        try {
-            httpServer = UpnpHttpServer(HTTP_PORT).also { it.start() }
-            Log.i(TAG, "UPnP HTTP server on :$HTTP_PORT ($localIp)")
+        // Start UPnP HTTP server with watchdog
+        startHttpServer()
 
-            // Start SSDP advertisement
-            val usn = "$deviceUuid::urn:schemas-upnp-org:device:MediaRenderer:1"
-            ssdpAdvertiser = SsdpAdvertiser(usn, deviceUuid, descriptionUrl).also { it.start() }
+        // Start SSDP advertisement
+        val usn = "$deviceUuid::urn:schemas-upnp-org:device:MediaRenderer:1"
+        ssdpAdvertiser = SsdpAdvertiser(usn, deviceUuid, descriptionUrl).also { it.start() }
 
-            Log.i(TAG, "DLNA renderer started: $friendlyName ($deviceUuid) at $baseUrl")
-        } catch (e: java.net.BindException) {
-            Log.w(TAG, "Port $HTTP_PORT already in use, DLNA renderer will retry on next start: ${e.message}")
-            httpServer = null
-        } catch (e: Exception) {
-            Log.e(TAG, "DLNA renderer start failed: ${e.message}")
-            httpServer = null
-        }
+        Log.i(TAG, "DLNA renderer started: $friendlyName ($deviceUuid) at $baseUrl")
+
+        // Watchdog: check every 30s if HTTP server is still alive, restart if dead
+        watchdogThread = Thread {
+            while (!Thread.currentThread().isInterrupted) {
+                try {
+                    Thread.sleep(30_000)
+                    if (httpServer?.isAlive != true) {
+                        Log.w(TAG, "HTTP server died, restarting...")
+                        startHttpServer()
+                    }
+                } catch (_: InterruptedException) {
+                    break
+                }
+            }
+        }.also { it.isDaemon = true; it.start() }
 
         return START_STICKY
     }
 
+    private var watchdogThread: Thread? = null
+
+    private fun startHttpServer() {
+        try {
+            httpServer?.stop()
+        } catch (_: Exception) {}
+        try {
+            httpServer = UpnpHttpServer(HTTP_PORT).also { it.start() }
+            Log.i(TAG, "UPnP HTTP server on :$HTTP_PORT")
+        } catch (e: java.net.BindException) {
+            Log.w(TAG, "Port $HTTP_PORT in use: ${e.message}")
+            httpServer = null
+        } catch (e: Exception) {
+            Log.e(TAG, "HTTP server start failed: ${e.message}")
+            httpServer = null
+        }
+    }
+
     override fun onDestroy() {
+        watchdogThread?.interrupt()
         ssdpAdvertiser?.stop()
         httpServer?.stop()
         releaseMediaPlayer()
