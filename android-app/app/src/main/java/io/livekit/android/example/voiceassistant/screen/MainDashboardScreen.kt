@@ -39,6 +39,8 @@ import io.livekit.android.example.voiceassistant.audio.WakeWordManager
 import io.livekit.android.example.voiceassistant.intercom.IntercomManager
 import io.livekit.android.example.voiceassistant.intercom.IntercomState
 import io.livekit.android.example.voiceassistant.settings.AppSettings
+import io.livekit.android.example.voiceassistant.state.DeviceState
+import io.livekit.android.example.voiceassistant.state.DeviceStateManager
 import io.livekit.android.example.voiceassistant.ui.*
 import io.livekit.android.example.voiceassistant.util.HomeAssistantDetector
 import kotlinx.coroutines.*
@@ -101,6 +103,17 @@ fun MainDashboardScreen() {
     val room = remember { LiveKit.create(context) }
     var roomConnected by remember { mutableStateOf(false) }
 
+    // --- Central resource coordinator ---
+    val deviceStateManager = remember(audioPipeline, room) {
+        DeviceStateManager(
+            context = context,
+            audioPipeline = audioPipeline,
+            voiceRoom = room,
+            securityCameraEnabled = false, // Will be configurable in settings
+        )
+    }
+    val deviceState by deviceStateManager.state.collectAsState()
+
     // --- Avatar WebView ref (for JS bridge calls into TalkingHead.js) ---
     val avatarWebViewRef = remember { mutableStateOf<WebView?>(null) }
 
@@ -111,17 +124,17 @@ fun MainDashboardScreen() {
     val isConversation = voiceState == VoiceState.CONVERSATION || voiceState == VoiceState.ENDING
 
     // --- Shared conversation lifecycle functions ---
-    val startConversation: (String) -> Unit = remember(room, audioPipeline, avatarEnabled) {
+    // All resource management (mic, camera, audio focus) is handled by DeviceStateManager.
+    val startConversation: (String) -> Unit = remember(room, deviceStateManager, avatarEnabled) {
         { score: String ->
             if (voiceState == VoiceState.WAKE_WORD) {
                 voiceState = VoiceState.CONVERSATION
                 conversationStatus = ConversationStatus.LISTENING
                 chatMessages.clear()
                 scope.launch {
-                    audioPipeline.stop()
+                    // DeviceStateManager handles: stop audioPipeline, enable mic + camera, duck DLNA
+                    deviceStateManager.transitionTo(DeviceState.CONVERSATION)
                     try {
-                        room.localParticipant.setMicrophoneEnabled(true)
-                        Log.i(TAG, "LiveKit mic enabled")
                         val signalJson = JSONObject().apply {
                             put("type", "wake_word_detected")
                             put("score", score)
@@ -141,15 +154,14 @@ fun MainDashboardScreen() {
         endingTimeoutJob?.cancel()
         endingTimeoutJob = null
         scope.launch {
-            try { room.localParticipant.setMicrophoneEnabled(false) } catch (_: Exception) {}
-            delay(200) // Let LiveKit release AudioRecord before we reclaim it
-            audioPipeline.start()
+            // DeviceStateManager handles: disable mic + camera, restart audioPipeline, re-enable security cam
+            deviceStateManager.transitionTo(DeviceState.IDLE)
             voiceState = VoiceState.WAKE_WORD
             Log.i(TAG, "Reset to WAKE_WORD")
         }
     }
 
-    val endConversation: () -> Unit = remember(room) {
+    val endConversation: () -> Unit = remember(room, deviceStateManager) {
         {
             if (voiceState == VoiceState.CONVERSATION) {
                 voiceState = VoiceState.ENDING
@@ -159,7 +171,6 @@ fun MainDashboardScreen() {
                         val endSignal = JSONObject().put("type", "end_conversation")
                         room.localParticipant.publishData(endSignal.toString().toByteArray())
                     } catch (_: Exception) {}
-                    try { room.localParticipant.setMicrophoneEnabled(false) } catch (_: Exception) {}
                 }
                 // Fallback: if server doesn't confirm within 3s, force reset
                 endingTimeoutJob = scope.launch {
@@ -241,12 +252,9 @@ fun MainDashboardScreen() {
                     }
                     val tokenJson = JSONObject(tokenResp)
                     cr.connect(livekitUrl, tokenJson.getString("token"))
-                    cr.localParticipant.setMicrophoneEnabled(true)
-                    try {
-                        cr.localParticipant.setCameraEnabled(true)
-                    } catch (camErr: Exception) {
-                        Log.w(TAG, "Camera not available: ${camErr.message}")
-                    }
+                    // DeviceStateManager handles mic/camera/audio focus transition
+                    deviceStateManager.callRoom = cr
+                    deviceStateManager.transitionTo(DeviceState.INTERCOM_CALL)
                     callRoom = cr
                     Log.i(TAG, "Joined call room: ${call.roomName} (outgoing=${call.isOutgoing})")
                     // Listen for remote tracks in outer scope so it survives snapshotFlow re-emissions
@@ -287,42 +295,50 @@ fun MainDashboardScreen() {
         }
     }
 
-    // --- Register device & connect to LiveKit ---
+    // --- Register device & connect to LiveKit (with retry until success) ---
     LaunchedEffect(effectiveDeviceId) {
         if (effectiveDeviceId == "tablet-pending") return@LaunchedEffect
-        // Register with token server
-        try {
-            val regBody = JSONObject().apply {
-                put("device_id", effectiveDeviceId)
-                put("display_name", deviceDisplayName.ifEmpty { effectiveDeviceId })
-                put("room_location", deviceRoomLocation)
-            }
-            withContext(Dispatchers.IO) {
-                val conn = java.net.URL("$tokenServerUrl/register").openConnection() as java.net.HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.setRequestProperty("Content-Type", "application/json")
-                conn.doOutput = true
-                conn.outputStream.write(regBody.toString().toByteArray())
-                conn.inputStream.bufferedReader().readText()
-                conn.disconnect()
-            }
-            Log.i(TAG, "Device registered: $effectiveDeviceId")
-        } catch (e: Exception) {
-            Log.w(TAG, "Device registration failed: ${e.message}")
-        }
 
-        // Connect to LiveKit with device identity
-        try {
-            val response = withContext(Dispatchers.IO) {
-                URL("$tokenServerUrl/token?identity=$effectiveDeviceId&room=voice-room").readText()
+        // Register + connect loop — retries every 10s until both succeed
+        while (!roomConnected) {
+            // Register with token server
+            try {
+                val regBody = JSONObject().apply {
+                    put("device_id", effectiveDeviceId)
+                    put("display_name", deviceDisplayName.ifEmpty { effectiveDeviceId })
+                    put("room_location", deviceRoomLocation)
+                }
+                withContext(Dispatchers.IO) {
+                    val conn = java.net.URL("$tokenServerUrl/register").openConnection() as java.net.HttpURLConnection
+                    conn.connectTimeout = 5_000
+                    conn.requestMethod = "POST"
+                    conn.setRequestProperty("Content-Type", "application/json")
+                    conn.doOutput = true
+                    conn.outputStream.write(regBody.toString().toByteArray())
+                    conn.inputStream.bufferedReader().readText()
+                    conn.disconnect()
+                }
+                Log.i(TAG, "Device registered: $effectiveDeviceId")
+            } catch (e: Exception) {
+                Log.w(TAG, "Device registration failed: ${e.message}, will retry...")
+                delay(10_000)
+                continue
             }
-            val json = JSONObject(response)
-            val token = json.getString("token")
-            room.connect(livekitUrl, token)
-            roomConnected = true
-            Log.i(TAG, "LiveKit connected as '$effectiveDeviceId'")
-        } catch (e: Exception) {
-            Log.e(TAG, "LiveKit connect failed: ${e.message}")
+
+            // Connect to LiveKit with device identity
+            try {
+                val response = withContext(Dispatchers.IO) {
+                    URL("$tokenServerUrl/token?identity=$effectiveDeviceId&room=voice-room").readText()
+                }
+                val json = JSONObject(response)
+                val token = json.getString("token")
+                room.connect(livekitUrl, token)
+                roomConnected = true
+                Log.i(TAG, "LiveKit connected as '$effectiveDeviceId'")
+            } catch (e: Exception) {
+                Log.e(TAG, "LiveKit connect failed: ${e.message}, retrying in 10s...")
+                delay(10_000)
+            }
         }
     }
 
@@ -513,6 +529,7 @@ fun MainDashboardScreen() {
         onDispose {
             intercomManager.stop()
             intercomManager.release()
+            deviceStateManager.release()
             audioPipeline.stop()
             wakeWordManager.release()
             room.disconnect()
@@ -599,9 +616,12 @@ fun MainDashboardScreen() {
                                 onHangup = {
                                     scope.launch {
                                         intercomManager.hangup()
+                                        // Transition back to IDLE — restores wake word, security cam, releases audio focus
+                                        deviceStateManager.transitionTo(DeviceState.IDLE)
                                         callRoom?.disconnect()
                                         callRoom?.release()
                                         callRoom = null
+                                        deviceStateManager.callRoom = null
                                         remoteVideoTrack = null
                                         localVideoTrack = null
                                         Log.i(TAG, "Call ended, room cleaned up")
@@ -624,9 +644,11 @@ fun MainDashboardScreen() {
                                 onHangup = {
                                     scope.launch {
                                         intercomManager.hangup()
+                                        deviceStateManager.transitionTo(DeviceState.IDLE)
                                         callRoom?.disconnect()
                                         callRoom?.release()
                                         callRoom = null
+                                        deviceStateManager.callRoom = null
                                         remoteVideoTrack = null
                                         localVideoTrack = null
                                         Log.i(TAG, "Outgoing call cancelled")
@@ -756,14 +778,16 @@ fun MainDashboardScreen() {
             )
         }
 
-        // Settings gear icon (top-right)
-        Box(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(8.dp)
-        ) {
-            androidx.compose.material3.IconButton(onClick = { settingsVisible = true }) {
-                Text("⚙", fontSize = 24.sp, color = Color.White.copy(alpha = 0.8f))
+        // Settings gear icon (top-right) — hidden while conversation card is open
+        if (!isConversation) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(8.dp)
+            ) {
+                androidx.compose.material3.IconButton(onClick = { settingsVisible = true }) {
+                    Text("⚙", fontSize = 24.sp, color = Color.White.copy(alpha = 0.8f))
+                }
             }
         }
 

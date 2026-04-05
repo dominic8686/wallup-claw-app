@@ -1,22 +1,29 @@
 FROM debian:13.4
 
-# System deps — matches Hermes Dockerfile base + ffmpeg for audio processing
+# AGENT_MODE controls whether Hermes is installed at build time.
+# openrouter (default) — lightweight, no Hermes
+# hermes              — installs NousResearch/hermes-agent from GitHub
+ARG AGENT_MODE=openrouter
+
+# System deps — ffmpeg for audio, git for pip GitHub installs
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential python3 python3-pip \
-    ffmpeg gcc python3-dev libffi-dev \
+    ffmpeg gcc python3-dev libffi-dev git \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /usr/bin/python3 /usr/bin/python
 
-# Install Hermes from the additional build context (injected by docker-compose).
-# This bakes the Hermes code + all its Python deps into the image.
-COPY --from=hermes . /opt/hermes
-RUN pip install --no-cache-dir -e "/opt/hermes[all]" --break-system-packages
+# Install Hermes from GitHub only when building the hermes variant
+RUN if [ "$AGENT_MODE" = "hermes" ]; then \
+    pip install --no-cache-dir \
+        "hermes-agent[all] @ git+https://github.com/NousResearch/hermes-agent.git" \
+        --break-system-packages; \
+    fi
 
-# Install voice-agent specific deps on top
+# Install voice-agent specific deps
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt --break-system-packages
 
 COPY . .
 
-CMD ["python", "agent.py"]
+CMD ["python", "main.py"]

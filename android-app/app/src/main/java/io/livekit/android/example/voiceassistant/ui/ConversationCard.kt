@@ -2,13 +2,13 @@ package io.livekit.android.example.voiceassistant.ui
 
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -18,7 +18,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -79,16 +78,9 @@ fun ConversationCard(
             .fillMaxHeight()
             .clip(RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp))
             .background(MaterialTheme.colorScheme.surface)
-            .pointerInput(Unit) {
-                detectHorizontalDragGestures { _, dragAmount ->
-                    if (dragAmount > 40) { // Swipe right to close
-                        onClose()
-                    }
-                }
-            }
             .padding(16.dp)
     ) {
-        // Status header
+        // Status header with close button
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
@@ -111,7 +103,14 @@ fun ConversationCard(
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 24.sp,
                 color = statusColor,
+                modifier = Modifier.weight(1f),
             )
+            IconButton(
+                onClick = onClose,
+                modifier = Modifier.size(48.dp)
+            ) {
+                Text("✕", fontSize = 26.sp, color = MaterialTheme.colorScheme.onSurface)
+            }
         }
 
         // Avatar WebView (TalkingHead.js)

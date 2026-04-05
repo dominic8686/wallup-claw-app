@@ -27,8 +27,8 @@ Endpoints:
        Returns 200 OK.
 
   GET  /tts?text=<text>&voice=<voice>
-       Proxy to OpenAI TTS API. Returns audio/mpeg stream.
-       Uses OPENAI_API_KEY env var. Default voice: alloy.
+       Generate speech via edge-tts (free, no API key).
+       Returns audio/mpeg stream. Default voice: en-GB-SoniaNeural (TTS_VOICE env).
 
   GET  /avatar
   GET  /avatar/<path>
@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any
 
 import aiofiles
-from aiohttp import web, ClientSession, ClientTimeout
+from aiohttp import web
 from livekit.api import AccessToken, VideoGrants
 from zeroconf import IPVersion, ServiceInfo, Zeroconf
 
@@ -56,7 +56,7 @@ from zeroconf import IPVersion, ServiceInfo, Zeroconf
 LIVEKIT_API_KEY = os.environ["LIVEKIT_API_KEY"]
 LIVEKIT_API_SECRET = os.environ["LIVEKIT_API_SECRET"]
 LIVEKIT_EXTERNAL_URL = os.environ.get("LIVEKIT_EXTERNAL_URL", "ws://localhost:7880")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+TTS_VOICE = os.environ.get("TTS_VOICE", "en-GB-SoniaNeural")
 
 # Path to avatar static files (relative to this script, or absolute)
 AVATAR_DIR = Path(os.environ.get("AVATAR_DIR", Path(__file__).parent.parent / "avatar")).resolve()
@@ -409,7 +409,7 @@ async def handle_health(request: web.Request) -> web.Response:
 
 
 async def handle_tts(request: web.Request) -> web.Response:
-    """Proxy text-to-speech requests to OpenAI TTS API.
+    """Generate speech using edge-tts (free, no API key required).
 
     GET /tts?text=<text>&voice=<voice>
     Returns audio/mpeg stream.
@@ -418,40 +418,31 @@ async def handle_tts(request: web.Request) -> web.Response:
     if not text:
         return web.Response(text="text parameter required", status=400, headers=CORS_HEADERS)
 
-    if not OPENAI_API_KEY:
-        return web.Response(text="OPENAI_API_KEY not configured on server", status=503, headers=CORS_HEADERS)
-
-    voice = request.query.get("voice", "alloy")
-    model = request.query.get("model", "tts-1")
+    voice = request.query.get("voice", TTS_VOICE)
 
     try:
-        timeout = ClientTimeout(total=30)
-        async with ClientSession(timeout=timeout) as session:
-            async with session.post(
-                "https://api.openai.com/v1/audio/speech",
-                headers={
-                    "Authorization": f"Bearer {OPENAI_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={"model": model, "voice": voice, "input": text, "response_format": "mp3"},
-            ) as resp:
-                if resp.status != 200:
-                    body = await resp.text()
-                    print(f"[tts] OpenAI error {resp.status}: {body[:200]}")
-                    return web.Response(text=f"TTS upstream error {resp.status}", status=502, headers=CORS_HEADERS)
+        import edge_tts
+        communicate = edge_tts.Communicate(text, voice)
+        mp3_chunks = []
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                mp3_chunks.append(chunk["data"])
 
-                audio_bytes = await resp.read()
-                return web.Response(
-                    body=audio_bytes,
-                    content_type="audio/mpeg",
-                    headers={
-                        **CORS_HEADERS,
-                        "Cache-Control": "no-cache",
-                    },
-                )
+        if not mp3_chunks:
+            return web.Response(text="TTS returned no audio", status=502, headers=CORS_HEADERS)
+
+        audio_bytes = b"".join(mp3_chunks)
+        return web.Response(
+            body=audio_bytes,
+            content_type="audio/mpeg",
+            headers={
+                **CORS_HEADERS,
+                "Cache-Control": "no-cache",
+            },
+        )
     except Exception as e:
-        print(f"[tts] Proxy error: {e}")
-        return web.Response(text=f"TTS proxy error: {e}", status=500, headers=CORS_HEADERS)
+        print(f"[tts] edge-tts error: {e}")
+        return web.Response(text=f"TTS error: {e}", status=500, headers=CORS_HEADERS)
 
 
 async def handle_avatar(request: web.Request) -> web.Response:

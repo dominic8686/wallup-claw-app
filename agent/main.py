@@ -5,10 +5,17 @@ Controlled by AGENT_MODE environment variable:
   openrouter  Lightweight direct OpenRouter call. Model set via AGENT_MODEL env var.
 
 Audio pipeline (both modes):
-  LiveKit WebRTC -> Silero VAD -> OpenAI Whisper STT -> backend -> OpenAI TTS -> LiveKit
+  LiveKit WebRTC -> Silero VAD -> OpenRouter STT (Gemini) -> backend -> edge-tts -> LiveKit
+
+Key env vars:
+  AGENT_MODE        hermes | openrouter (default: hermes)
+  AVATAR_ENABLED    true | false  — send text via data channel instead of TTS (default: false)
+  STT_MODEL         OpenRouter model for transcription (default: google/gemini-3.1-flash-lite-preview)
+  TTS_VOICE         edge-tts voice (default: en-GB-SoniaNeural)
 """
 
 import asyncio
+import base64
 import io
 import logging
 import os
@@ -16,6 +23,7 @@ import sys
 import tempfile
 import wave
 import numpy as np
+from PIL import Image
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger("hermes-livekit")
@@ -46,6 +54,127 @@ logger.info("Agent mode: %s | avatar: %s", AGENT_MODE, AVATAR_ENABLED)
 
 from livekit import rtc, api
 import json as _json
+from aiohttp import web
+
+# ---------------------------------------------------------------------------
+# Vision AI — video frame buffer
+# ---------------------------------------------------------------------------
+
+_latest_frame_jpeg = [None]  # Most recent camera frame as JPEG bytes
+
+VISION_TRIGGERS = [
+    "what do you see", "look at this", "describe what", "what is this",
+    "show you", "explain what", "can you see", "tell me what",
+    "what am i holding", "what's this", "identify this", "what color",
+    "how many", "read this", "what does it say",
+]
+
+VISION_MODEL = os.environ.get("VISION_MODEL", "gpt-4o")
+
+
+def frame_to_jpeg(frame: rtc.VideoFrame, quality: int = 80) -> bytes:
+    """Convert a LiveKit VideoFrame (ARGB) to JPEG bytes."""
+    # Convert to RGBA if needed
+    argb_frame = frame.convert(rtc.VideoBufferType.RGBA)
+    img = Image.frombytes(
+        "RGBA",
+        (argb_frame.width, argb_frame.height),
+        argb_frame.data,
+    )
+    # Convert RGBA -> RGB for JPEG
+    img = img.convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=quality)
+    return buf.getvalue()
+
+
+async def capture_video_frames(video_stream: rtc.VideoStream):
+    """Continuously capture frames from a video stream, keeping only the latest."""
+    logger.info("Video frame capture started")
+    frame_count = 0
+    async for event in video_stream:
+        try:
+            _latest_frame_jpeg[0] = frame_to_jpeg(event.frame)
+            frame_count += 1
+            if frame_count == 1 or frame_count % 300 == 0:
+                logger.info("Video frame #%d captured (%d bytes JPEG)",
+                            frame_count, len(_latest_frame_jpeg[0]))
+        except Exception as e:
+            if frame_count < 3:
+                logger.error("Frame conversion error: %s", e)
+
+
+async def vision_query(transcript: str, jpeg_bytes: bytes) -> str:
+    """Send a text + image query to a vision-capable model (GPT-4o)."""
+    from openai import OpenAI
+    client = OpenAI()
+    try:
+        b64_image = base64.b64encode(jpeg_bytes).decode("utf-8")
+        response = await asyncio.to_thread(
+            client.chat.completions.create,
+            model=VISION_MODEL,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": transcript},
+                    {"type": "image_url", "image_url": {
+                        "url": f"data:image/jpeg;base64,{b64_image}",
+                        "detail": "low",
+                    }},
+                ],
+            }],
+            max_tokens=300,
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        logger.error("Vision query failed: %s", e)
+        return f"I tried to look but encountered an error: {e}"
+    finally:
+        client.close()
+
+
+def is_vision_request(transcript: str) -> bool:
+    """Check if the user's transcript is asking about something visual."""
+    lower = transcript.lower()
+    return any(trigger in lower for trigger in VISION_TRIGGERS)
+
+
+# ---------------------------------------------------------------------------
+# Snapshot HTTP server (for HA Generic Camera integration)
+# ---------------------------------------------------------------------------
+
+SNAPSHOT_PORT = int(os.environ.get("SNAPSHOT_PORT", "8091"))
+
+
+async def handle_snapshot(request: web.Request) -> web.Response:
+    """Return the latest camera frame as a JPEG image."""
+    jpeg = _latest_frame_jpeg[0]
+    if jpeg is None:
+        return web.Response(text="No frame available", status=503)
+    return web.Response(
+        body=jpeg,
+        content_type="image/jpeg",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+async def handle_snapshot_health(request: web.Request) -> web.Response:
+    has_frame = _latest_frame_jpeg[0] is not None
+    return web.Response(text=_json.dumps({"ok": True, "has_frame": has_frame}),
+                        content_type="application/json")
+
+
+async def start_snapshot_server():
+    """Start the snapshot HTTP server for HA camera integration."""
+    app = web.Application()
+    app.router.add_get("/snapshot", handle_snapshot)
+    app.router.add_get("/health", handle_snapshot_health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", SNAPSHOT_PORT)
+    await site.start()
+    logger.info("Snapshot server listening on :%d", SNAPSHOT_PORT)
+
 
 # ---------------------------------------------------------------------------
 # Live transcript relay (sends to LiveKit room data channel)
@@ -75,48 +204,85 @@ async def relay_transcript(role: str, text: str):
         logger.debug("Chat relay failed: %s", e)
 
 # ---------------------------------------------------------------------------
-# STT helper
+# STT helper — OpenRouter chat completions with audio input
 # ---------------------------------------------------------------------------
+
+STT_MODEL = os.environ.get("STT_MODEL", "google/gemini-3.1-flash-lite-preview")
 
 async def transcribe_audio(wav_path: str) -> str:
-    """Transcribe a WAV file using OpenAI Whisper."""
-    from openai import OpenAI
-    client = OpenAI()
+    """Transcribe a WAV file via OpenRouter audio-capable model."""
+    import base64
+    import aiohttp
+
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not api_key:
+        logger.error("STT: OPENROUTER_API_KEY not set")
+        return ""
+
+    with open(wav_path, "rb") as f:
+        audio_b64 = base64.b64encode(f.read()).decode()
+
+    payload = {
+        "model": STT_MODEL,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Transcribe this audio exactly. Return only the spoken words, nothing else."},
+                {"type": "input_audio", "input_audio": {"data": audio_b64, "format": "wav"}},
+            ],
+        }],
+    }
     try:
-        with open(wav_path, "rb") as f:
-            result = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=f,
-                response_format="text",
-            )
-        return str(result).strip()
-    finally:
-        client.close()
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    logger.error("STT upstream error %d: %s", resp.status, body[:200])
+                    return ""
+                data = await resp.json()
+                return data["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        logger.error("STT failed: %s", e)
+        return ""
 
 # ---------------------------------------------------------------------------
-# TTS helper
+# TTS helper — edge-tts (free, no API key) → PCM via pydub
 # ---------------------------------------------------------------------------
+
+TTS_VOICE = os.environ.get("TTS_VOICE", "en-GB-SoniaNeural")
 
 async def text_to_speech(text: str, output_path: str) -> bool:
-    """Convert text to speech using OpenAI TTS. Returns True on success."""
-    from openai import OpenAI
-    client = OpenAI()
+    """Convert text to 24kHz 16-bit mono PCM using edge-tts. Returns True on success."""
     try:
-        response = client.audio.speech.create(
-            model="tts-1",
-            voice="alloy",
-            input=text,
-            response_format="pcm",  # Raw 24kHz 16-bit mono PCM
-        )
+        import edge_tts
+        from pydub import AudioSegment
+        from io import BytesIO
+
+        communicate = edge_tts.Communicate(text, TTS_VOICE)
+        mp3_chunks = []
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                mp3_chunks.append(chunk["data"])
+
+        if not mp3_chunks:
+            logger.error("TTS: edge-tts returned no audio")
+            return False
+
+        mp3_bytes = b"".join(mp3_chunks)
+        audio = AudioSegment.from_mp3(BytesIO(mp3_bytes))
+        audio = audio.set_channels(1).set_frame_rate(24000).set_sample_width(2)
+        # Export as raw 16-bit LE PCM (no WAV header)
         with open(output_path, "wb") as f:
-            for chunk in response.iter_bytes():
-                f.write(chunk)
+            f.write(audio.raw_data)
         return True
     except Exception as e:
         logger.error("TTS failed: %s", e)
         return False
-    finally:
-        client.close()
 
 # ---------------------------------------------------------------------------
 # Chat backends
@@ -126,13 +292,12 @@ class HermesBackend:
     """Full Hermes AIAgent — tools, memory, HA, MCP servers."""
 
     def __init__(self):
-        sys.path.insert(0, "/opt/hermes")
         try:
             from run_agent import AIAgent
         except ImportError as e:
             raise SystemExit(
                 f"AGENT_MODE=hermes but Hermes failed to import: {e}\n"
-                "Check that /opt/hermes is mounted and all dependencies are installed."
+                "Ensure the image was built with AGENT_MODE=hermes (pip-installs hermes-agent from GitHub)."
             ) from e
         self._agent = AIAgent(
             model=os.environ.get("HERMES_MODEL", "gpt-4o-mini"),
@@ -603,7 +768,11 @@ async def main():
 
     @room.on("track_subscribed")
     def on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
-        if track.kind == rtc.TrackKind.KIND_AUDIO:
+        if track.kind == rtc.TrackKind.KIND_VIDEO:
+            logger.info("Subscribed to VIDEO from %s", participant.identity)
+            video_stream = rtc.VideoStream(track)
+            asyncio.ensure_future(capture_video_frames(video_stream))
+        elif track.kind == rtc.TrackKind.KIND_AUDIO:
             logger.info("Subscribed to audio from %s", participant.identity)
             audio_stream = rtc.AudioStream(track)
 
@@ -644,9 +813,7 @@ async def main():
             # PCM -> WAV -> STT
             wav_path = pcm_to_wav(pcm_data, sample_rate=16000)
             try:
-                transcript = await asyncio.to_thread(
-                    lambda: asyncio.run(transcribe_audio(wav_path))
-                )
+                transcript = await transcribe_audio(wav_path)
             finally:
                 os.unlink(wav_path)
 
@@ -658,8 +825,13 @@ async def main():
             logger.info("User said: %s", transcript)
             await relay_transcript("user", transcript)
 
-            # Backend processes the transcript
-            response = await backend.chat(transcript)
+            # Check if this is a vision request and we have a camera frame
+            if is_vision_request(transcript) and _latest_frame_jpeg[0] is not None:
+                logger.info("Vision request detected, sending frame to %s", VISION_MODEL)
+                response = await vision_query(transcript, _latest_frame_jpeg[0])
+            else:
+                # Standard text-only backend
+                response = await backend.chat(transcript)
             logger.info("Response: %s", response[:100])
             await relay_transcript("assistant", response)
 
@@ -698,6 +870,7 @@ async def main():
     # Start background tasks
     asyncio.ensure_future(ha_event_listener())
     asyncio.ensure_future(silence_timeout_checker())
+    asyncio.ensure_future(start_snapshot_server())
 
     # Keep running
     try:

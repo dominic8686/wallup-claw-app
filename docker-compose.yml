@@ -17,10 +17,10 @@ services:
   voice-agent:
     build:
       context: ./agent
-      # Injects /opt/hermes into the build so the Dockerfile can COPY --from=hermes.
-      # Hermes code + all deps are baked into the image at build time.
-      additional_contexts:
-        hermes: /opt/hermes
+      # Passes AGENT_MODE into the build so the Dockerfile can conditionally
+      # install Hermes from GitHub. Matches the runtime AGENT_MODE env var below.
+      args:
+        - AGENT_MODE=${AGENT_MODE:-hermes}
     network_mode: host
     environment:
       # LiveKit connection — specific to this project, not in ~/.hermes/.env
@@ -43,7 +43,19 @@ services:
       # The agent will send text via data channel; the avatar page handles TTS + lip sync.
       - AVATAR_ENABLED=false
 
-      # All other API keys (OpenRouter, OpenAI, HASS, Browserbase, Firecrawl, etc.)
+      # --- Vision AI ---
+      # Model used for visual queries ("what do you see?"). Must support image input.
+      - VISION_MODEL=gpt-4o
+
+      # --- Snapshot server (for HA Generic Camera integration) ---
+      # Serves latest camera frame as JPEG at GET /snapshot.
+      # With network_mode: host, this port is directly accessible on the LXC IP.
+      - SNAPSHOT_PORT=8091
+
+      # OpenRouter — LLM (all modes) + STT transcription
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+
+      # All other Hermes-specific keys (HASS, Browserbase, Firecrawl, etc.)
       # are loaded by agent.py via load_dotenv('/root/.hermes/.env') from the mount below.
     volumes:
       # Hermes runtime data: .env (all API keys), config.yaml, memories, skills, sessions
@@ -60,8 +72,6 @@ services:
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
       - LIVEKIT_EXTERNAL_URL=ws://${CT200_HOST}:7880
       - PORT=8090
-      # OpenAI key needed by the /tts proxy endpoint (used by TalkingHead.js avatar)
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
       # Override avatar dir path inside the container
       - AVATAR_DIR=/app/avatar
     volumes:

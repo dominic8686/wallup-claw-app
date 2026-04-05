@@ -80,11 +80,11 @@ A self-hosted voice assistant and multi-tablet intercom system built on **LiveKi
 
 **Voice pipeline**:
 1. **VAD** — Silero v5 ONNX, 16kHz, 512-sample chunks, speech threshold 0.5
-2. **STT** — OpenAI Whisper (`whisper-1`)
+2. **STT** — OpenRouter chat completions with `input_audio` (default: `google/gemini-3.1-flash-lite-preview`, configurable via `STT_MODEL`)
 3. **LLM** — Hermes AIAgent via OpenRouter (tools, memory, skills, HA control)
-4. **TTS** — OpenAI TTS (`tts-1`, `alloy` voice), 24kHz PCM *(skipped when `AVATAR_ENABLED=true`)*
+4. **TTS** — edge-tts (`en-GB-SoniaNeural` default, configurable via `TTS_VOICE`), PCM via pydub *(skipped when `AVATAR_ENABLED=true`)*
 5. **Playback** — Published to LiveKit audio track, 20ms frame pacing *(in TTS mode)*
-   **OR** `agent_speak` data channel event sent to tablet *(in avatar mode)*
+   **OR** `agent_speak` data channel event sent to tablet for TalkingHead.js avatar *(in avatar mode)*
 
 **Toolsets enabled**: `web`, `homeassistant`, `memory`, `terminal` + 56 MCP tools (second_brain, ha_mcp, ms365)
 
