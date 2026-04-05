@@ -443,10 +443,11 @@ class HermesIntercomCard extends HTMLElement {
     const lastCallEntity = Object.keys(this._hass.states).find(
       e => e.startsWith("sensor.hermes_intercom_last_call")
     );
+    const logDiv = this.querySelector("#call-log");
+    if (!logDiv) return;
     if (lastCallEntity) {
       const state = this._hass.states[lastCallEntity];
-      const logDiv = this.querySelector("#call-log");
-      if (logDiv && state.state !== "No calls") {
+      if (state.state !== "No calls" && state.attributes.from) {
         const attrs = state.attributes;
         logDiv.innerHTML = `
           <div style="font-size:12px;color:#888;margin-bottom:4px;">Last Call</div>
@@ -456,6 +457,8 @@ class HermesIntercomCard extends HTMLElement {
             ${attrs.started_at ? new Date(attrs.started_at).toLocaleTimeString() : ""}
           </div>
         `;
+      } else {
+        logDiv.innerHTML = "";
       }
     }
   }

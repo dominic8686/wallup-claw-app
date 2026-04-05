@@ -1,11 +1,14 @@
 package io.livekit.android.example.voiceassistant.state
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
 import android.util.Log
+import androidx.core.content.ContextCompat
 import io.livekit.android.example.voiceassistant.audio.AudioPipelineManager
 import io.livekit.android.room.Room
 import kotlinx.coroutines.*
@@ -64,6 +67,22 @@ class DeviceStateManager(
 
     // Call room reference — set externally when a call room is created
     var callRoom: Room? = null
+
+    private fun hasCameraPermission(): Boolean =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+
+    /** Safely enable camera only if permission is granted. */
+    private suspend fun safeEnableCamera(room: Room, label: String) {
+        if (!hasCameraPermission()) {
+            Log.w(TAG, "$label: camera permission not granted, skipping")
+            return
+        }
+        try {
+            room.localParticipant.setCameraEnabled(true)
+        } catch (e: Exception) {
+            Log.w(TAG, "$label: setCameraEnabled failed: ${e.message}")
+        }
+    }
 
     /**
      * Transition to a new device state.
@@ -131,12 +150,7 @@ class DeviceStateManager(
                 audioPipeline.start()
                 // Re-enable security camera on voice-room if configured
                 if (securityCameraEnabled) {
-                    try {
-                        voiceRoom.localParticipant.setCameraEnabled(true)
-                        Log.d(TAG, "Setup IDLE: security camera re-enabled")
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Failed to enable security camera: ${e.message}")
-                    }
+                    safeEnableCamera(voiceRoom, "Setup IDLE: security camera")
                 }
                 Log.d(TAG, "Setup IDLE: audioPipeline started")
             }
@@ -146,9 +160,7 @@ class DeviceStateManager(
                     Log.e(TAG, "Failed to enable voice-room mic: ${e.message}")
                 }
                 // Enable voice-room camera for vision AI
-                try { voiceRoom.localParticipant.setCameraEnabled(true) } catch (e: Exception) {
-                    Log.w(TAG, "Failed to enable voice-room camera: ${e.message}")
-                }
+                safeEnableCamera(voiceRoom, "Setup CONVERSATION: camera")
                 // Request audio focus to duck DLNA
                 requestAudioFocus(duck = true)
                 Log.d(TAG, "Setup CONVERSATION: mic on, camera on, DLNA ducked")
@@ -161,9 +173,7 @@ class DeviceStateManager(
                     try { room.localParticipant.setMicrophoneEnabled(true) } catch (e: Exception) {
                         Log.e(TAG, "Failed to enable call-room mic: ${e.message}")
                     }
-                    try { room.localParticipant.setCameraEnabled(true) } catch (e: Exception) {
-                        Log.w(TAG, "Failed to enable call-room camera: ${e.message}")
-                    }
+                    safeEnableCamera(room, "Setup INTERCOM_CALL: camera")
                 }
                 // Request exclusive audio focus (pause DLNA)
                 requestAudioFocus(duck = false)
@@ -188,11 +198,15 @@ class DeviceStateManager(
     suspend fun setSecurityCameraEnabled(enabled: Boolean) {
         securityCameraEnabled = enabled
         if (_state.value == DeviceState.IDLE) {
-            try {
-                voiceRoom.localParticipant.setCameraEnabled(enabled)
-                Log.i(TAG, "Security camera ${if (enabled) "enabled" else "disabled"}")
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to toggle security camera: ${e.message}")
+            if (enabled) {
+                safeEnableCamera(voiceRoom, "Security camera enable")
+            } else {
+                try {
+                    voiceRoom.localParticipant.setCameraEnabled(false)
+                    Log.i(TAG, "Security camera disabled")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to disable security camera: ${e.message}")
+                }
             }
         }
     }

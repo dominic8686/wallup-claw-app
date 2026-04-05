@@ -97,20 +97,13 @@ fun SettingsDrawer(
                 // Device Identity
                 Text("Device Identity", fontWeight = FontWeight.Bold, fontSize = 16.sp)
 
-                var deviceIdEdit by remember(deviceId) { mutableStateOf(deviceId) }
                 OutlinedTextField(
-                    value = deviceIdEdit,
-                    onValueChange = { deviceIdEdit = it },
+                    value = deviceId,
+                    onValueChange = {},
                     label = { Text("Device ID") },
+                    readOnly = true,
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
-                    trailingIcon = {
-                        if (deviceIdEdit != deviceId) {
-                            TextButton(onClick = {
-                                scope.launch { settings.setDeviceId(deviceIdEdit) }
-                            }) { Text("Save") }
-                        }
-                    }
                 )
 
                 var displayNameEdit by remember(deviceDisplayName) { mutableStateOf(deviceDisplayName) }

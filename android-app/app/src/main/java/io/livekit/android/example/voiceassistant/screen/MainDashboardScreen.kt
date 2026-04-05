@@ -65,13 +65,16 @@ enum class VoiceState {
     ENDING,
 }
 
-@OptIn(Beta::class)
+@OptIn(Beta::class, com.google.accompanist.permissions.ExperimentalPermissionsApi::class)
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun MainDashboardScreen() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val appSettings = remember { AppSettings(context) }
+
+    // Request mic + camera permissions upfront (camera needed for vision AI + security cam)
+    io.livekit.android.example.voiceassistant.requirePermissions(microphone = true, camera = true)
 
     // --- Settings state ---
     val haUrl by appSettings.haUrl.collectAsState(initial = AppSettings.DEFAULT_HA_URL)
