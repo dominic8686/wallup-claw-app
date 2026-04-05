@@ -53,14 +53,14 @@ object AppUpdater {
             val remoteVersion = tagName.removePrefix("v")
             val releaseNotes = json.get("body")?.asString ?: ""
 
-            // Find the .apk asset
+            // Find the .apk asset — use API url (not browser_download_url) for private repos
             val assets = json.getAsJsonArray("assets") ?: return@withContext null
             var apkUrl: String? = null
             for (asset in assets) {
                 val obj = asset.asJsonObject
                 val name = obj.get("name")?.asString ?: continue
                 if (name.endsWith(".apk")) {
-                    apkUrl = obj.get("browser_download_url")?.asString
+                    apkUrl = obj.get("url")?.asString
                     break
                 }
             }
@@ -95,8 +95,13 @@ object AppUpdater {
                 updateDir.mkdirs()
                 val apkFile = File(updateDir, "wallup-update.apk")
 
-                // Download
-                val request = Request.Builder().url(downloadUrl).build()
+                // Download (needs auth for private repo assets)
+                val dlRequestBuilder = Request.Builder().url(downloadUrl)
+                    .header("Accept", "application/octet-stream")
+                if (BuildConfig.GITHUB_RELEASES_TOKEN.isNotEmpty()) {
+                    dlRequestBuilder.header("Authorization", "Bearer ${BuildConfig.GITHUB_RELEASES_TOKEN}")
+                }
+                val request = dlRequestBuilder.build()
                 val response = client.newCall(request).execute()
                 if (!response.isSuccessful) {
                     Log.e(TAG, "Download failed: ${response.code}")
