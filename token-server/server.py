@@ -161,8 +161,10 @@ CORS_HEADERS = {
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
 }
 
-# Paths that don't require authentication
-_PUBLIC_PATHS = {"/health", "/avatar"}
+# Paths that don't require authentication.
+# Tablet-facing endpoints (register, heartbeat, signals, token) are exempt
+# because the Android app connects directly on the LAN without an API key.
+_PUBLIC_PATHS = {"/health", "/avatar", "/register", "/heartbeat", "/signals", "/token"}
 
 
 @web.middleware

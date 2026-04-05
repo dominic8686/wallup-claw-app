@@ -1,6 +1,7 @@
 package io.livekit.android.example.voiceassistant.screen
 
 import android.annotation.SuppressLint
+import android.os.Build
 import android.util.Log
 import android.view.ViewGroup
 import android.webkit.WebChromeClient
@@ -39,6 +40,7 @@ import io.livekit.android.example.voiceassistant.audio.WakeWordManager
 import io.livekit.android.example.voiceassistant.intercom.IntercomManager
 import io.livekit.android.example.voiceassistant.intercom.IntercomState
 import io.livekit.android.example.voiceassistant.settings.AppSettings
+import io.livekit.android.example.voiceassistant.dlna.DlnaRendererService
 import io.livekit.android.example.voiceassistant.state.DeviceState
 import io.livekit.android.example.voiceassistant.state.DeviceStateManager
 import io.livekit.android.example.voiceassistant.ui.*
@@ -411,6 +413,21 @@ fun MainDashboardScreen() {
                 Log.w(TAG, "Config poll failed: ${e.message}")
             }
         }
+    }
+
+    // --- Start DLNA speaker service ---
+    LaunchedEffect(effectiveDeviceId) {
+        if (effectiveDeviceId == "tablet-pending") return@LaunchedEffect
+        val dlnaIntent = android.content.Intent(context, DlnaRendererService::class.java).apply {
+            putExtra("device_id", effectiveDeviceId)
+            putExtra("friendly_name", deviceDisplayName.ifEmpty { effectiveDeviceId })
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(dlnaIntent)
+        } else {
+            context.startService(dlnaIntent)
+        }
+        Log.i(TAG, "DLNA renderer service started for $effectiveDeviceId")
     }
 
     // --- Initialize voice pipeline ---

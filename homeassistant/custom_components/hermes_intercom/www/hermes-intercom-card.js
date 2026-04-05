@@ -38,7 +38,42 @@ class HermesIntercomCard extends HTMLElement {
     this._config = config;
     this._tokenServerUrl = config.token_server_url || "http://192.168.211.153:8090";
     this._livekitUrl = config.livekit_url || "ws://192.168.211.153:7880";
+    this._apiKey = config.api_key || "";
     this._pollInterval = config.poll_interval || 5000;
+  }
+
+  /** Build headers with auth if api_key is configured. */
+  _headers(extra = {}) {
+    const h = { "Content-Type": "application/json", ...extra };
+    if (this._apiKey) h["Authorization"] = `Bearer ${this._apiKey}`;
+    return h;
+  }
+
+  /** Fetch wrapper with auth + error handling. */
+  async _apiFetch(path, opts = {}) {
+    const url = `${this._tokenServerUrl}${path}`;
+    opts.headers = this._headers(opts.headers || {});
+    try {
+      const resp = await fetch(url, opts);
+      if (resp.status === 401) {
+        this._showError("Unauthorized — check api_key in card config");
+        return null;
+      }
+      return resp;
+    } catch (e) {
+      if (e instanceof TypeError && e.message.includes("Failed to fetch")) {
+        this._showError("Cannot reach token server. If using HTTPS, ensure token_server_url is also HTTPS.");
+      } else {
+        this._showError(`Network error: ${e.message}`);
+      }
+      return null;
+    }
+  }
+
+  _showError(msg) {
+    const el = this.querySelector("#call-status");
+    if (el) { el.textContent = msg; el.style.color = "#F44336"; }
+    else console.error("Hermes Intercom:", msg);
   }
 
   _initialize() {
@@ -100,13 +135,14 @@ class HermesIntercomCard extends HTMLElement {
   }
 
   async _fetchDevices() {
+    const resp = await this._apiFetch("/devices");
+    if (!resp) return;
     try {
-      const resp = await fetch(`${this._tokenServerUrl}/devices`);
       const data = await resp.json();
       this._devices = data.devices || [];
       this._renderDevices();
     } catch (e) {
-      console.warn("Hermes Intercom: fetch failed", e);
+      console.warn("Hermes Intercom: parse failed", e);
     }
   }
 
@@ -202,11 +238,11 @@ class HermesIntercomCard extends HTMLElement {
       if (!LK) throw new Error("LiveKit SDK not loaded");
 
       // Send call signal
-      const sigResp = await fetch(`${this._tokenServerUrl}/signal`, {
+      const sigResp = await this._apiFetch("/signal", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ type: "call_request", from: "ha-dashboard", to: deviceId }),
       });
+      if (!sigResp) return;
       const sigData = await sigResp.json();
       if (!sigData.ok) { alert(`Call failed: ${sigData.error || "Unknown error"}`); return; }
 
@@ -215,7 +251,8 @@ class HermesIntercomCard extends HTMLElement {
       const roomName = sigData.room_name;
 
       // Get LiveKit token
-      const tokenResp = await fetch(`${this._tokenServerUrl}/token?identity=ha-dashboard&room=${encodeURIComponent(roomName)}`);
+      const tokenResp = await this._apiFetch(`/token?identity=ha-dashboard&room=${encodeURIComponent(roomName)}`);
+      if (!tokenResp) return;
       const tokenData = await tokenResp.json();
 
       // Connect to LiveKit room
@@ -250,9 +287,8 @@ class HermesIntercomCard extends HTMLElement {
   async _hangup() {
     if (this._callId && this._callTarget) {
       try {
-        await fetch(`${this._tokenServerUrl}/signal`, {
+        await this._apiFetch("/signal", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ type: "call_hangup", from: "ha-dashboard", to: this._callTarget, call_id: this._callId }),
         });
       } catch (e) {}
@@ -351,6 +387,7 @@ class HermesIntercomCard extends HTMLElement {
     return {
       token_server_url: "http://192.168.211.153:8090",
       livekit_url: "ws://192.168.211.153:7880",
+      api_key: "",
     };
   }
 }
