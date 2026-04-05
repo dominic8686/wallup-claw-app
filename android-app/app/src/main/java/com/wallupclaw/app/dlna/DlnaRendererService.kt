@@ -73,13 +73,24 @@ class DlnaRendererService : Service() {
 
         Log.i(TAG, "DLNA renderer started: $friendlyName ($deviceUuid) at $baseUrl")
 
-        // Watchdog: check every 30s if HTTP server is still alive, restart if dead
+        // Watchdog: check every 15s with real HTTP connectivity test
         watchdogThread = Thread {
             while (!Thread.currentThread().isInterrupted) {
                 try {
-                    Thread.sleep(30_000)
-                    if (httpServer?.isAlive != true) {
-                        Log.w(TAG, "HTTP server died, restarting...")
+                    Thread.sleep(15_000)
+                    // Real connectivity check — try to fetch description.xml
+                    val reachable = try {
+                        val conn = java.net.URL("http://127.0.0.1:$HTTP_PORT/description.xml")
+                            .openConnection() as java.net.HttpURLConnection
+                        conn.connectTimeout = 3_000
+                        conn.readTimeout = 3_000
+                        val code = conn.responseCode
+                        conn.disconnect()
+                        code == 200
+                    } catch (_: Exception) { false }
+
+                    if (!reachable) {
+                        Log.w(TAG, "HTTP server unreachable, restarting...")
                         startHttpServer()
                     }
                 } catch (_: InterruptedException) {
@@ -284,9 +295,16 @@ class DlnaRendererService : Service() {
 
     private inner class UpnpHttpServer(port: Int) : NanoHTTPD(port) {
 
-        override fun useGzipWhenAccepted(r: Response?): Boolean = false  // Disable GZIP to prevent crash
+        override fun useGzipWhenAccepted(r: Response?): Boolean = false
 
-        override fun serve(session: IHTTPSession): Response {
+        override fun serve(session: IHTTPSession): Response = try {
+            serveInternal(session)
+        } catch (e: Exception) {
+            Log.e(TAG, "serve() error: ${e.message}")
+            newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Internal error")
+        }
+
+        private fun serveInternal(session: IHTTPSession): Response {
             val uri = session.uri
             val method = session.method
 
