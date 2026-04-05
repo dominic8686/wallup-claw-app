@@ -109,7 +109,7 @@ class AppSettings(private val context: Context) {
         prefs[AVATAR_ENABLED_KEY] ?: false
     }
 
-    val deviceId
+    val deviceId: Flow<String> = context.dataStore.data.map { prefs ->
         prefs[DEVICE_ID_KEY] ?: DEFAULT_DEVICE_ID
     }
 
@@ -165,7 +165,7 @@ class AppSettings(private val context: Context) {
         context.dataStore.edit { it[AVATAR_ENABLED_KEY] = enabled }
     }
 
-    suspend fun setDeviceId
+    suspend fun setDeviceId(id: String) {
         context.dataStore.edit { it[DEVICE_ID_KEY] = id }
     }
 
