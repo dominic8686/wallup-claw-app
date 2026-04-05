@@ -31,9 +31,31 @@
 # Gson — keep classes used for JSON deserialization
 -keep class com.google.gson.** { *; }
 
+# LiveKit SDK
 -keepclassmembers class io.livekit.android.** {
     *** Companion;
 }
 -keepclasseswithmembers class io.livekit.android.** {
     kotlinx.serialization.KSerializer serializer(...);
 }
+
+# App navigation routes — @Serializable classes used by Compose Navigation
+-keep class com.wallupclaw.app.screen.** { *; }
+-keepclassmembers class com.wallupclaw.app.screen.** {
+    *** Companion;
+    kotlinx.serialization.KSerializer serializer(...);
+}
+
+# kotlinx.serialization — keep all serializers
+-keepattributes *Annotation*, InnerClasses
+-keepclassmembers class kotlinx.serialization.json.** { *** Companion; }
+-keep,includedescriptorclasses class com.wallupclaw.app.**$$serializer { *; }
+-keepclassmembers class com.wallupclaw.app.** {
+    *** Companion;
+}
+-keepclasseswithmembers class com.wallupclaw.app.** {
+    kotlinx.serialization.KSerializer serializer(...);
+}
+
+# NanoHTTPD (DLNA service)
+-keep class fi.iki.elonen.** { *; }
