@@ -978,10 +978,7 @@ class TabletSession:
         try:
             self.log("info", "Conversation ACTIVE")
             await relay_transcript(self.room, "system", "🌟 Conversation started")
-            greeting = await self.backend.chat(
-                "The user just said the wake word Hey Jarvis. Greet them warmly and briefly."
-            )
-            self.log("info", "Greeting: %s", greeting)
+            greeting = "How can I help you?"
             await self._speak(greeting)
         finally:
             self.processing = False
