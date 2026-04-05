@@ -74,7 +74,7 @@ fun MainDashboardScreen() {
     val livekitUrl by appSettings.livekitServerUrl.collectAsState(initial = AppSettings.DEFAULT_LIVEKIT_URL)
     val tokenServerUrl by appSettings.tokenServerUrl.collectAsState(initial = AppSettings.DEFAULT_TOKEN_SERVER_URL)
     val avatarEnabled by appSettings.avatarEnabled.collectAsState(initial = false)
-    val deviceId
+    val deviceId by appSettings.deviceId.collectAsState(initial = "__LOADING__")
     val deviceDisplayName by appSettings.deviceDisplayName.collectAsState(initial = AppSettings.DEFAULT_DEVICE_DISPLAY_NAME)
     val deviceRoomLocation by appSettings.deviceRoomLocation.collectAsState(initial = AppSettings.DEFAULT_DEVICE_ROOM_LOCATION)
 
