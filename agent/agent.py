@@ -37,7 +37,12 @@ AGENT_MODE = os.environ.get("AGENT_MODE", "hermes").strip().lower()
 if AGENT_MODE not in ("hermes", "openrouter"):
     raise SystemExit(f"Invalid AGENT_MODE={AGENT_MODE!r}. Must be 'hermes' or 'openrouter'.")
 
-logger.info("Agent mode: %s", AGENT_MODE)
+# When AVATAR_ENABLED=true the agent sends text via data channel instead of
+# producing TTS audio itself. The TalkingHead.js avatar page (served by the
+# token server) receives the text and speaks it with its own TTS + lip sync.
+AVATAR_ENABLED = os.environ.get("AVATAR_ENABLED", "false").strip().lower() == "true"
+
+logger.info("Agent mode: %s | avatar: %s", AGENT_MODE, AVATAR_ENABLED)
 
 from livekit import rtc, api
 import json as _json
@@ -538,7 +543,20 @@ async def main():
     logger.info("Published TTS audio track")
 
     async def speak(text: str):
-        """Convert text to speech and send through persistent audio track."""
+        """Speak text: either via avatar data channel event or LiveKit TTS audio track."""
+        if AVATAR_ENABLED:
+            # Send text to TalkingHead.js avatar on the tablet instead of playing audio here.
+            try:
+                msg = _json.dumps({"type": "agent_speak", "text": text})
+                await room.local_participant.publish_data(
+                    msg.encode("utf-8"), reliable=True, topic="hermes-control"
+                )
+                logger.info("Avatar speak dispatched (%d chars)", len(text))
+            except Exception as e:
+                logger.error("Avatar speak publish failed: %s", e)
+            return
+
+        # --- Standard TTS via LiveKit audio track ---
         tmp = tempfile.NamedTemporaryFile(suffix=".pcm", delete=False)
         tmp.close()
         try:

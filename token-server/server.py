@@ -25,16 +25,27 @@ Endpoints:
 
   GET  /health
        Returns 200 OK.
+
+  GET  /tts?text=<text>&voice=<voice>
+       Proxy to OpenAI TTS API. Returns audio/mpeg stream.
+       Uses OPENAI_API_KEY env var. Default voice: alloy.
+
+  GET  /avatar
+  GET  /avatar/<path>
+       Serves static files from the avatar/ directory (TalkingHead.js page).
 """
 
 import asyncio
 import json
+import mimetypes
 import os
 import socket
 import time
+from pathlib import Path
 from typing import Any
 
-from aiohttp import web
+import aiofiles
+from aiohttp import web, ClientSession, ClientTimeout
 from livekit.api import AccessToken, VideoGrants
 from zeroconf import IPVersion, ServiceInfo, Zeroconf
 
@@ -45,6 +56,10 @@ from zeroconf import IPVersion, ServiceInfo, Zeroconf
 LIVEKIT_API_KEY = os.environ["LIVEKIT_API_KEY"]
 LIVEKIT_API_SECRET = os.environ["LIVEKIT_API_SECRET"]
 LIVEKIT_EXTERNAL_URL = os.environ.get("LIVEKIT_EXTERNAL_URL", "ws://localhost:7880")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+
+# Path to avatar static files (relative to this script, or absolute)
+AVATAR_DIR = Path(os.environ.get("AVATAR_DIR", Path(__file__).parent.parent / "avatar")).resolve()
 
 STALE_TIMEOUT = 45  # seconds before a device is considered offline
 LONG_POLL_TIMEOUT = 25  # seconds to hold a /signals request
@@ -393,6 +408,88 @@ async def handle_health(request: web.Request) -> web.Response:
     return web.Response(text="ok", headers=CORS_HEADERS)
 
 
+async def handle_tts(request: web.Request) -> web.Response:
+    """Proxy text-to-speech requests to OpenAI TTS API.
+
+    GET /tts?text=<text>&voice=<voice>
+    Returns audio/mpeg stream.
+    """
+    text = request.query.get("text", "").strip()
+    if not text:
+        return web.Response(text="text parameter required", status=400, headers=CORS_HEADERS)
+
+    if not OPENAI_API_KEY:
+        return web.Response(text="OPENAI_API_KEY not configured on server", status=503, headers=CORS_HEADERS)
+
+    voice = request.query.get("voice", "alloy")
+    model = request.query.get("model", "tts-1")
+
+    try:
+        timeout = ClientTimeout(total=30)
+        async with ClientSession(timeout=timeout) as session:
+            async with session.post(
+                "https://api.openai.com/v1/audio/speech",
+                headers={
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={"model": model, "voice": voice, "input": text, "response_format": "mp3"},
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    print(f"[tts] OpenAI error {resp.status}: {body[:200]}")
+                    return web.Response(text=f"TTS upstream error {resp.status}", status=502, headers=CORS_HEADERS)
+
+                audio_bytes = await resp.read()
+                return web.Response(
+                    body=audio_bytes,
+                    content_type="audio/mpeg",
+                    headers={
+                        **CORS_HEADERS,
+                        "Cache-Control": "no-cache",
+                    },
+                )
+    except Exception as e:
+        print(f"[tts] Proxy error: {e}")
+        return web.Response(text=f"TTS proxy error: {e}", status=500, headers=CORS_HEADERS)
+
+
+async def handle_avatar(request: web.Request) -> web.Response:
+    """Serve static files from the avatar/ directory.
+
+    GET /avatar        -> avatar/index.html
+    GET /avatar/foo    -> avatar/foo
+    """
+    # Extract sub-path (everything after /avatar)
+    sub_path = request.match_info.get("tail", "").lstrip("/")
+    if not sub_path:
+        sub_path = "index.html"
+
+    file_path = (AVATAR_DIR / sub_path).resolve()
+
+    # Security: reject path traversal outside AVATAR_DIR
+    if not str(file_path).startswith(str(AVATAR_DIR)):
+        return web.Response(text="Forbidden", status=403)
+
+    if not file_path.exists() or not file_path.is_file():
+        return web.Response(text="Not found", status=404)
+
+    mime, _ = mimetypes.guess_type(str(file_path))
+    mime = mime or "application/octet-stream"
+
+    try:
+        async with aiofiles.open(file_path, "rb") as f:
+            content = await f.read()
+        return web.Response(
+            body=content,
+            content_type=mime,
+            headers=CORS_HEADERS,
+        )
+    except Exception as e:
+        print(f"[avatar] File read error: {e}")
+        return web.Response(text="Internal error", status=500)
+
+
 # ---------------------------------------------------------------------------
 # Zeroconf mDNS advertisement
 # ---------------------------------------------------------------------------
@@ -443,6 +540,14 @@ app = web.Application()
 # Token & health
 app.router.add_get("/token", handle_token)
 app.router.add_get("/health", handle_health)
+
+# TTS proxy
+app.router.add_get("/tts", handle_tts)
+app.router.add_route("OPTIONS", "/tts", handle_options)
+
+# Avatar static files
+app.router.add_get("/avatar", handle_avatar)
+app.router.add_get("/avatar/{tail:.*}", handle_avatar)
 
 # Device registry
 app.router.add_post("/register", handle_register)

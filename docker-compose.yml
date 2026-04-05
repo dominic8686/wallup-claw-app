@@ -38,6 +38,11 @@ services:
       # Examples: openai/gpt-4o-mini  google/gemini-2.0-flash  anthropic/claude-3-haiku
       - AGENT_MODEL=openai/gpt-4o-mini
 
+      # --- Avatar mode ---
+      # Set AVATAR_ENABLED=true to use the TalkingHead.js avatar instead of LiveKit TTS.
+      # The agent will send text via data channel; the avatar page handles TTS + lip sync.
+      - AVATAR_ENABLED=false
+
       # All other API keys (OpenRouter, OpenAI, HASS, Browserbase, Firecrawl, etc.)
       # are loaded by agent.py via load_dotenv('/root/.hermes/.env') from the mount below.
     volumes:
@@ -55,6 +60,13 @@ services:
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
       - LIVEKIT_EXTERNAL_URL=ws://${CT200_HOST}:7880
       - PORT=8090
+      # OpenAI key needed by the /tts proxy endpoint (used by TalkingHead.js avatar)
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # Override avatar dir path inside the container
+      - AVATAR_DIR=/app/avatar
+    volumes:
+      # Mount avatar static files so they are served at GET /avatar
+      - ./avatar:/app/avatar:ro
     depends_on:
       - livekit-server
     restart: unless-stopped

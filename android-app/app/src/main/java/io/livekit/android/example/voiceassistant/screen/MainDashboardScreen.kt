@@ -30,7 +30,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import io.livekit.android.LiveKit
 import io.livekit.android.annotations.Beta
-import io.livekit.android.compose.types.TrackReference
 import io.livekit.android.events.RoomEvent
 import io.livekit.android.events.collect
 import io.livekit.android.room.track.Track

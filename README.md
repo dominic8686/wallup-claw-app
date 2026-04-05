@@ -9,7 +9,7 @@ A self-hosted voice assistant and **multi-tablet intercom** system built on **Li
 - **Home Assistant Integration** — Custom integration (`hermes_intercom`) exposes tablets as HA devices with call/broadcast/DND services
 - **Automation Blueprints** — Doorbell → call all, missed call → phone notification, bedtime DND, motion → announce
 - **Lovelace Dashboard Card** — Device grid with status, call buttons, and quick announce bar
-- **Anam Avatar** — Optional animated avatar during voice conversations
+- **TalkingHead.js Avatar** — Optional local 3D animated avatar with real lip sync, served from the token server (no cloud dependency, no API key in the app)
 
 See [AGENTS.md](AGENTS.md) for full architecture, deployment, and operations documentation.
 
@@ -69,7 +69,7 @@ See [AGENTS.md](AGENTS.md) for full architecture, deployment, and operations doc
 - **Key dependencies**:
   - `livekit` — Room/track API for WebRTC audio
   - `livekit-api` — Token generation
-  - `openai` — Whisper STT + TTS
+  - `openai` — Whisper STT + TTS (TTS bypassed when `AVATAR_ENABLED=true`)
   - `onnxruntime` — Silero VAD inference
   - `hermes-agent` — Hermes AIAgent library (installed from `/opt/hermes`)
   - `numpy` — Audio processing

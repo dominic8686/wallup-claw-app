@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hermes Avatar</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%;
+      background: #0a0a0f;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #avatar-container {
+      width: 100%;
+      height: 100%;
+      position: relative;
+    }
+    #status {
+      position: absolute;
+      bottom: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: rgba(255,255,255,0.5);
+      font-family: system-ui, sans-serif;
+      font-size: 13px;
+      letter-spacing: 0.05em;
+      pointer-events: none;
+      transition: opacity 0.4s;
+    }
+    #status.hidden { opacity: 0; }
+  </style>
+</head>
+<body>
+  <div id="avatar-container"></div>
+  <div id="status">Loading avatar…</div>
+
+  <!-- Three.js (required by TalkingHead) -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import { TalkingHead } from "https://cdn.jsdelivr.net/gh/met4citizen/TalkingHead@1/modules/talkinghead.mjs";
+
+    const statusEl = document.getElementById("status");
+    const container = document.getElementById("avatar-container");
+
+    // ---------------------------------------------------------------------------
+    // Derive TTS base URL from the page origin (token-server serves both)
+    // ---------------------------------------------------------------------------
+    const ttsEndpoint = window.location.origin + "/tts";
+
+    // ---------------------------------------------------------------------------
+    // Free ReadyPlayerMe avatar (half-body, neutral)
+    // Replace with any other .glb/.vrm URL hosted on the same server or a CDN.
+    // ---------------------------------------------------------------------------
+    const AVATAR_URL =
+      "https://models.readyplayer.me/64bfa15f0e72c63d7c3934a6.glb" +
+      "?morphTargets=ARKit,Oculus+Visemes&textureAtlas=1024";
+
+    // ---------------------------------------------------------------------------
+    // Initialise TalkingHead
+    // ---------------------------------------------------------------------------
+    let head;
+    try {
+      head = new TalkingHead(container, {
+        ttsEndpoint: ttsEndpoint,
+        ttsApikey: "",          // key lives on the server side; proxy handles auth
+        cameraView: "upper",    // show head + shoulders
+        cameraRotateEnable: false,
+        statsEnable: false,
+      });
+
+      statusEl.textContent = "Loading 3D model…";
+
+      await head.showAvatar(
+        {
+          url: AVATAR_URL,
+          body: "F",
+          avatarMood: "neutral",
+          ttsLang: "en-GB",
+          ttsVoice: "en-GB-Neural2-C",
+          lipsyncLang: "en",
+        },
+        (ev) => {
+          if (ev.lengthComputable) {
+            const pct = Math.round((ev.loaded / ev.total) * 100);
+            statusEl.textContent = `Loading… ${pct}%`;
+          }
+        }
+      );
+
+      statusEl.textContent = "Ready";
+      setTimeout(() => statusEl.classList.add("hidden"), 2000);
+
+    } catch (err) {
+      statusEl.textContent = "Avatar load failed: " + err.message;
+      console.error("TalkingHead init error:", err);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Public API called by Android via evaluateJavascript()
+    // ---------------------------------------------------------------------------
+
+    /**
+     * Speak text using TalkingHead lip sync + TTS proxy.
+     * Called from Android: window.talkingHeadSpeak('Hello world')
+     */
+    window.talkingHeadSpeak = function(text) {
+      if (!head || !text) return;
+      try {
+        head.speakText(text);
+        statusEl.textContent = "Speaking…";
+        statusEl.classList.remove("hidden");
+        setTimeout(() => statusEl.classList.add("hidden"), 3000);
+      } catch (e) {
+        console.error("talkingHeadSpeak error:", e);
+      }
+    };
+
+    /**
+     * Signal that the user is speaking (listening state).
+     * Called from Android: window.talkingHeadListen()
+     */
+    window.talkingHeadListen = function() {
+      if (!head) return;
+      try {
+        head.speakText(""); // stop current speech
+        statusEl.textContent = "Listening…";
+        statusEl.classList.remove("hidden");
+        setTimeout(() => statusEl.classList.add("hidden"), 2000);
+      } catch (e) { /* ignore */ }
+    };
+
+    /**
+     * Return to idle state.
+     * Called from Android: window.talkingHeadIdle()
+     */
+    window.talkingHeadIdle = function() {
+      if (!head) return;
+      try {
+        statusEl.classList.add("hidden");
+      } catch (e) { /* ignore */ }
+    };
+  </script>
+</body>
+</html>

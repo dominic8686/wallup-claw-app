@@ -41,7 +41,9 @@ jobs:
         run: echo "GITHUB_RELEASES_TOKEN=${{ secrets.RELEASES_PAT }}" > local.properties
 
       - name: Restore debug keystore
-        run: echo "${{ secrets.DEBUG_KEYSTORE }}" | base64 -d > ~/.android/debug.keystore
+        run: |
+          mkdir -p ~/.android
+          echo "${{ secrets.DEBUG_KEYSTORE }}" | base64 -d > ~/.android/debug.keystore
         shell: bash
 
       - name: Build Release APK

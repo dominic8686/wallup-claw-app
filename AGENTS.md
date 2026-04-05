@@ -82,8 +82,9 @@ A self-hosted voice assistant and multi-tablet intercom system built on **LiveKi
 1. **VAD** — Silero v5 ONNX, 16kHz, 512-sample chunks, speech threshold 0.5
 2. **STT** — OpenAI Whisper (`whisper-1`)
 3. **LLM** — Hermes AIAgent via OpenRouter (tools, memory, skills, HA control)
-4. **TTS** — OpenAI TTS (`tts-1`, `alloy` voice), 24kHz PCM
-5. **Playback** — Published to LiveKit audio track, 20ms frame pacing
+4. **TTS** — OpenAI TTS (`tts-1`, `alloy` voice), 24kHz PCM *(skipped when `AVATAR_ENABLED=true`)*
+5. **Playback** — Published to LiveKit audio track, 20ms frame pacing *(in TTS mode)*
+   **OR** `agent_speak` data channel event sent to tablet *(in avatar mode)*
 
 **Toolsets enabled**: `web`, `homeassistant`, `memory`, `terminal` + 56 MCP tools (second_brain, ha_mcp, ms365)
 
@@ -111,6 +112,7 @@ A self-hosted voice assistant and multi-tablet intercom system built on **LiveKi
 | `AudioPipelineManager` | Mic capture with dual-channel output (wake word + LiveKit) |
 | `WakeWordManager` | ONNX wake word detection (Hey Jarvis, Alexa, Hey Mycroft) |
 | `AppSettings` | DataStore persistence for all settings |
+| `ConversationCard` | Chat panel + optional TalkingHead.js avatar WebView |
 | `HomeAssistantDetector` | Auto-discovers HA instance on local network |
 
 ### 5. Hermes Intercom Tools
