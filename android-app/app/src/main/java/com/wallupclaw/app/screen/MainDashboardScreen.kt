@@ -40,6 +40,7 @@ import com.wallupclaw.app.audio.WakeWordManager
 import com.wallupclaw.app.intercom.IntercomManager
 import com.wallupclaw.app.intercom.IntercomState
 import com.wallupclaw.app.settings.AppSettings
+import com.wallupclaw.app.settings.BUNDLED_MODELS
 import com.wallupclaw.app.dlna.DlnaRendererService
 import com.wallupclaw.app.state.DeviceState
 import com.wallupclaw.app.state.DeviceStateManager
@@ -83,6 +84,7 @@ fun MainDashboardScreen() {
     val deviceDisplayName by appSettings.deviceDisplayName.collectAsState(initial = AppSettings.DEFAULT_DEVICE_DISPLAY_NAME)
     val deviceRoomLocation by appSettings.deviceRoomLocation.collectAsState(initial = AppSettings.DEFAULT_DEVICE_ROOM_LOCATION)
     val intercomApiKey by appSettings.intercomApiKey.collectAsState(initial = "")
+    val selectedWakeWordModel by appSettings.wakeWordModel.collectAsState(initial = BUNDLED_MODELS.first().id)
 
     // --- Token server HTTP client (attaches auth header) ---
     val tokenServerClient = remember(tokenServerUrl) { TokenServerClient(tokenServerUrl) }
@@ -473,10 +475,12 @@ fun MainDashboardScreen() {
     }
 
     // --- Initialize voice pipeline ---
-    LaunchedEffect(Unit) {
-        // Initialize wake word
+    LaunchedEffect(selectedWakeWordModel) {
+        // Initialize wake word with selected model from settings
+        val model = BUNDLED_MODELS.find { it.id == selectedWakeWordModel } ?: BUNDLED_MODELS.first()
+        Log.i(TAG, "Initializing wake word: ${model.displayName} (${model.assetPath})")
         withContext(Dispatchers.Default) {
-            wakeWordManager.initialize("wakeword_models/jarvis_v2.onnx")
+            wakeWordManager.initialize(model.assetPath)
         }
 
         // Start audio pipeline
