@@ -30,8 +30,7 @@ data class WakeWordModelInfo(
 )
 
 val BUNDLED_MODELS = listOf(
-    WakeWordModelInfo("jarvis_v2", "Hey Jarvis (v2)", "wakeword_models/jarvis_v2.onnx"),
-    WakeWordModelInfo("hey_jarvis", "Hey Jarvis (v0.1)", "wakeword_models/hey_jarvis_v0.1.onnx"),
+    WakeWordModelInfo("jarvis_v2", "Hey Jarvis", "wakeword_models/jarvis_v2.onnx"),
     WakeWordModelInfo("alexa", "Alexa", "wakeword_models/alexa_v0.1.onnx"),
     WakeWordModelInfo("hey_mycroft", "Hey Mycroft", "wakeword_models/hey_mycroft_v0.1.onnx"),
 )
