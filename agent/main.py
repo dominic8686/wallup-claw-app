@@ -57,86 +57,295 @@ import json as _json
 from aiohttp import web
 
 # ---------------------------------------------------------------------------
-# Vision AI — video frame buffer
+# Vision AI — video frame buffer + multimodal handler
 # ---------------------------------------------------------------------------
 
-_latest_frame_jpeg = [None]  # Most recent camera frame as JPEG bytes
-
-VISION_TRIGGERS = [
-    "what do you see", "look at this", "describe what", "what is this",
-    "show you", "explain what", "can you see", "tell me what",
-    "what am i holding", "what's this", "identify this", "what color",
-    "how many", "read this", "what does it say",
-]
+# Per-device frame buffers: device_id -> JPEG bytes
+_device_frames: dict[str, bytes] = {}
 
 VISION_MODEL = os.environ.get("VISION_MODEL", "gpt-4o")
+# Always attach the camera frame to every utterance during conversation.
+# When False, only explicit vision triggers attach the frame.
+VISION_ALWAYS_ATTACH = os.environ.get("VISION_ALWAYS_ATTACH", "true").strip().lower() == "true"
+
+# RTSP bridge: publish camera streams to mediamtx for HA Generic Camera
+RTSP_ENABLED = os.environ.get("RTSP_ENABLED", "true").strip().lower() == "true"
+RTSP_SERVER = os.environ.get("RTSP_SERVER", "rtsp://localhost:8554")
+RTSP_FPS = int(os.environ.get("RTSP_FPS", "5"))
+
+import subprocess
+import time as _time_mod
 
 
 def frame_to_jpeg(frame: rtc.VideoFrame, quality: int = 80) -> bytes:
     """Convert a LiveKit VideoFrame (ARGB) to JPEG bytes."""
-    # Convert to RGBA if needed
     argb_frame = frame.convert(rtc.VideoBufferType.RGBA)
     img = Image.frombytes(
         "RGBA",
         (argb_frame.width, argb_frame.height),
         argb_frame.data,
     )
-    # Convert RGBA -> RGB for JPEG
     img = img.convert("RGB")
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=quality)
     return buf.getvalue()
 
 
-async def capture_video_frames(video_stream: rtc.VideoStream):
-    """Continuously capture frames from a video stream, keeping only the latest."""
-    logger.info("Video frame capture started")
+class RtspBridge:
+    """Pipes raw video frames through ffmpeg to publish an RTSP stream to mediamtx."""
+
+    def __init__(self, device_id: str, width: int, height: int):
+        self.device_id = device_id
+        self.width = width
+        self.height = height
+        self._proc: subprocess.Popen | None = None
+
+    def start(self):
+        rtsp_url = f"{RTSP_SERVER}/tablet-{self.device_id}"
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "rawvideo",
+            "-pix_fmt", "rgb24",
+            "-s", f"{self.width}x{self.height}",
+            "-r", str(RTSP_FPS),
+            "-i", "pipe:0",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-tune", "zerolatency",
+            "-g", str(RTSP_FPS * 2),
+            "-f", "rtsp",
+            "-rtsp_transport", "tcp",
+            rtsp_url,
+        ]
+        try:
+            self._proc = subprocess.Popen(
+                cmd, stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            logger.info("[%s] RTSP bridge -> %s (%dx%d@%dfps)",
+                        self.device_id, rtsp_url, self.width, self.height, RTSP_FPS)
+        except Exception as e:
+            logger.error("[%s] RTSP bridge failed: %s", self.device_id, e)
+
+    def write_frame(self, rgb_bytes: bytes):
+        if self._proc and self._proc.stdin and self._proc.poll() is None:
+            try:
+                self._proc.stdin.write(rgb_bytes)
+            except BrokenPipeError:
+                logger.warning("[%s] RTSP pipe broken, restarting", self.device_id)
+                self.stop()
+                self.start()
+
+    def stop(self):
+        if self._proc:
+            try:
+                self._proc.stdin.close()
+            except Exception:
+                pass
+            try:
+                self._proc.terminate()
+                self._proc.wait(timeout=3)
+            except Exception:
+                try:
+                    self._proc.kill()
+                except Exception:
+                    pass
+            self._proc = None
+
+
+_rtsp_bridges: dict[str, RtspBridge] = {}
+
+
+async def capture_video_frames(video_stream: rtc.VideoStream, device_id: str = "default"):
+    """Capture frames: JPEG buffer for snapshots/vision + RTSP bridge for HA live view."""
+    logger.info("Video frame capture started for device=%s (rtsp=%s)", device_id, RTSP_ENABLED)
     frame_count = 0
+    last_rtsp_time = 0.0
+    rtsp_interval = 1.0 / max(RTSP_FPS, 1)
+
     async for event in video_stream:
         try:
-            _latest_frame_jpeg[0] = frame_to_jpeg(event.frame)
+            frame = event.frame
+
+            # JPEG snapshot buffer
+            jpeg = frame_to_jpeg(frame)
+            _device_frames[device_id] = jpeg
             frame_count += 1
             if frame_count == 1 or frame_count % 300 == 0:
-                logger.info("Video frame #%d captured (%d bytes JPEG)",
-                            frame_count, len(_latest_frame_jpeg[0]))
+                logger.info("[%s] Video frame #%d (%d bytes)",
+                            device_id, frame_count, len(jpeg))
+
+            # RTSP bridge (rate-limited)
+            if RTSP_ENABLED:
+                now = _time_mod.monotonic()
+                if now - last_rtsp_time >= rtsp_interval:
+                    last_rtsp_time = now
+                    rgba = frame.convert(rtc.VideoBufferType.RGBA)
+                    img = Image.frombytes(
+                        "RGBA", (rgba.width, rgba.height), rgba.data,
+                    ).convert("RGB")
+
+                    if device_id not in _rtsp_bridges:
+                        bridge = RtspBridge(device_id, img.width, img.height)
+                        bridge.start()
+                        _rtsp_bridges[device_id] = bridge
+
+                    _rtsp_bridges[device_id].write_frame(img.tobytes())
+
         except Exception as e:
             if frame_count < 3:
-                logger.error("Frame conversion error: %s", e)
+                logger.error("[%s] Frame error: %s", device_id, e)
 
 
-async def vision_query(transcript: str, jpeg_bytes: bytes) -> str:
-    """Send a text + image query to a vision-capable model (GPT-4o)."""
-    from openai import OpenAI
-    client = OpenAI()
-    try:
-        b64_image = base64.b64encode(jpeg_bytes).decode("utf-8")
-        response = await asyncio.to_thread(
-            client.chat.completions.create,
-            model=VISION_MODEL,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": transcript},
-                    {"type": "image_url", "image_url": {
-                        "url": f"data:image/jpeg;base64,{b64_image}",
-                        "detail": "low",
-                    }},
-                ],
-            }],
-            max_tokens=300,
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        logger.error("Vision query failed: %s", e)
-        return f"I tried to look but encountered an error: {e}"
-    finally:
-        client.close()
+class MultimodalHandler:
+    """Handles vision-aware conversations for a single tablet session.
 
+    Features:
+    - Maintains a multimodal conversation history (text + images)
+    - Attaches the latest camera frame to every utterance (VISION_ALWAYS_ATTACH)
+      so the LLM always "sees" what the user sees
+    - Explicit vision triggers get enhanced prompting for detailed descriptions
+    - Proactive scene analysis: can be triggered externally to describe what
+      the camera sees without a user prompt (e.g., doorbell automation)
+    - Interactive prompts: the LLM can ask follow-up questions about what it sees
+    """
 
-def is_vision_request(transcript: str) -> bool:
-    """Check if the user's transcript is asking about something visual."""
-    lower = transcript.lower()
-    return any(trigger in lower for trigger in VISION_TRIGGERS)
+    SYSTEM_PROMPT = (
+        "You are a helpful voice assistant with a camera. You can see what the user's "
+        "camera shows. When an image is attached, incorporate what you see naturally "
+        "into your response. Keep answers concise (1-3 sentences) since they will be "
+        "spoken aloud.\n\n"
+        "If you notice something interesting, dangerous, or noteworthy in the image "
+        "that the user didn't ask about, briefly mention it.\n\n"
+        "If the user asks you to look at, describe, read, count, or identify something, "
+        "give a detailed but spoken-word-friendly answer.\n\n"
+        "If no image is attached, respond normally without referencing visuals."
+    )
+
+    # Explicit triggers get an enhanced prompt prefix
+    VISION_TRIGGERS = [
+        "what do you see", "look at this", "describe what", "what is this",
+        "show you", "explain what", "can you see", "tell me what",
+        "what am i holding", "what's this", "identify this", "what color",
+        "how many", "read this", "what does it say", "look at",
+        "check this", "examine", "analyze this", "scan this",
+    ]
+
+    MAX_HISTORY = 20  # max conversation turns to keep
+
+    def __init__(self, device_id: str):
+        self.device_id = device_id
+        self.history: list[dict] = []  # OpenAI-format messages
+        self._client = None
+
+    def _get_client(self):
+        if self._client is None:
+            from openai import OpenAI
+            self._client = OpenAI()
+        return self._client
+
+    def _is_explicit_vision(self, transcript: str) -> bool:
+        """Check if the user is explicitly asking about something visual."""
+        lower = transcript.lower()
+        return any(t in lower for t in self.VISION_TRIGGERS)
+
+    def _build_user_message(self, transcript: str, jpeg_bytes: bytes | None, explicit_vision: bool) -> dict:
+        """Build a multimodal user message with optional image."""
+        content = []
+
+        # Add enhanced prompt prefix for explicit vision requests
+        if explicit_vision and jpeg_bytes:
+            text = (
+                f"[The user is pointing the camera at something and asking you to look. "
+                f"Describe what you see in detail.] {transcript}"
+            )
+        else:
+            text = transcript
+
+        content.append({"type": "text", "text": text})
+
+        if jpeg_bytes is not None:
+            b64 = base64.b64encode(jpeg_bytes).decode("utf-8")
+            content.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/jpeg;base64,{b64}",
+                    "detail": "low" if not explicit_vision else "auto",
+                },
+            })
+
+        return {"role": "user", "content": content}
+
+    async def chat(self, transcript: str, text_backend=None) -> str:
+        """Process a user utterance with optional vision.
+
+        Decision logic:
+        1. Explicit vision trigger + frame available → multimodal query (detailed)
+        2. VISION_ALWAYS_ATTACH + frame available → multimodal query (ambient)
+        3. No frame or vision disabled → delegate to text_backend
+        """
+        jpeg = _device_frames.get(self.device_id)
+        explicit_vision = self._is_explicit_vision(transcript)
+        use_vision = (explicit_vision and jpeg is not None) or \
+                     (VISION_ALWAYS_ATTACH and jpeg is not None)
+
+        if not use_vision:
+            # No vision — use the regular text backend (Hermes/OpenRouter)
+            if text_backend:
+                return await text_backend.chat(transcript)
+            # Fallback: send as text-only to vision model
+            return await self._query(transcript, None, False)
+
+        return await self._query(transcript, jpeg, explicit_vision)
+
+    async def _query(self, transcript: str, jpeg: bytes | None, explicit_vision: bool) -> str:
+        """Send multimodal query to the vision model with conversation history."""
+        client = self._get_client()
+
+        user_msg = self._build_user_message(transcript, jpeg, explicit_vision)
+        self.history.append(user_msg)
+
+        # Trim history (keep system + last N turns)
+        trimmed = self.history[-self.MAX_HISTORY:]
+
+        messages = [
+            {"role": "system", "content": self.SYSTEM_PROMPT},
+            *trimmed,
+        ]
+
+        try:
+            response = await asyncio.to_thread(
+                client.chat.completions.create,
+                model=VISION_MODEL,
+                messages=messages,
+                max_tokens=400,
+            )
+            reply = response.choices[0].message.content
+            self.history.append({"role": "assistant", "content": reply})
+            return reply
+        except Exception as e:
+            logger.error("MultimodalHandler query failed: %s", e)
+            return f"I had trouble processing that: {e}"
+
+    async def proactive_describe(self, context: str = "") -> str | None:
+        """Proactively describe what the camera sees.
+
+        Called externally (e.g., by HA automation, doorbell trigger, motion sensor).
+        Returns None if no frame is available.
+        """
+        jpeg = _device_frames.get(self.device_id)
+        if jpeg is None:
+            return None
+
+        prompt = "Briefly describe what you see in the camera image."
+        if context:
+            prompt = f"{context} Briefly describe what you see in the camera image."
+
+        return await self._query(prompt, jpeg, explicit_vision=True)
+
+    def reset(self):
+        """Clear conversation history (called when conversation ends)."""
+        self.history.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -147,8 +356,18 @@ SNAPSHOT_PORT = int(os.environ.get("SNAPSHOT_PORT", "8091"))
 
 
 async def handle_snapshot(request: web.Request) -> web.Response:
-    """Return the latest camera frame as a JPEG image."""
-    jpeg = _latest_frame_jpeg[0]
+    """Return the latest camera frame as a JPEG image.
+
+    GET /snapshot            -> first available device
+    GET /snapshot?device=id  -> specific device
+    """
+    device_id = request.query.get("device", "")
+    if device_id:
+        jpeg = _device_frames.get(device_id)
+    elif _device_frames:
+        jpeg = next(iter(_device_frames.values()))
+    else:
+        jpeg = None
     if jpeg is None:
         return web.Response(text="No frame available", status=503)
     return web.Response(
@@ -159,8 +378,8 @@ async def handle_snapshot(request: web.Request) -> web.Response:
 
 
 async def handle_snapshot_health(request: web.Request) -> web.Response:
-    has_frame = _latest_frame_jpeg[0] is not None
-    return web.Response(text=_json.dumps({"ok": True, "has_frame": has_frame}),
+    devices = {k: len(v) for k, v in _device_frames.items()}
+    return web.Response(text=_json.dumps({"ok": True, "devices": devices}),
                         content_type="application/json")
 
 
@@ -180,13 +399,11 @@ async def start_snapshot_server():
 # Live transcript relay (sends to LiveKit room data channel)
 # ---------------------------------------------------------------------------
 
-_room_ref = None  # Set after room.connect()
 _agent_label = "🤖 Hermes" if AGENT_MODE == "hermes" else "🤖 Assistant"
 
-async def relay_transcript(role: str, text: str):
+
+async def relay_transcript(room: rtc.Room, role: str, text: str):
     """Send transcript as a chat message visible in LiveKit's built-in chat UI."""
-    if _room_ref is None:
-        return
     try:
         prefix = "🎤 You: " if role == "user" else f"{_agent_label}: "
         msg = _json.dumps({
@@ -194,12 +411,11 @@ async def relay_transcript(role: str, text: str):
             "message": prefix + text,
             "timestamp": int(asyncio.get_event_loop().time() * 1000),
         })
-        await _room_ref.local_participant.publish_data(
+        await room.local_participant.publish_data(
             msg.encode("utf-8"),
             reliable=True,
             topic="lk-chat-topic",
         )
-        logger.debug("Relayed chat: %s: %s", role, text[:50])
     except Exception as e:
         logger.debug("Chat relay failed: %s", e)
 
@@ -251,32 +467,55 @@ async def transcribe_audio(wav_path: str) -> str:
         return ""
 
 # ---------------------------------------------------------------------------
-# TTS helper — edge-tts (free, no API key) → PCM via pydub
+# TTS helper — edge-tts or OpenAI → PCM via pydub
+#
+# TTS_BACKEND  edge-tts (default, free) | openai (requires OPENAI_API_KEY)
+# TTS_VOICE    edge-tts voice name  e.g. en-GB-SoniaNeural
+#              openai voice name    e.g. nova | alloy | echo | fable | onyx | shimmer
 # ---------------------------------------------------------------------------
 
-TTS_VOICE = os.environ.get("TTS_VOICE", "en-GB-SoniaNeural")
+TTS_BACKEND = os.environ.get("TTS_BACKEND", "edge-tts").strip().lower()
+TTS_VOICE = os.environ.get(
+    "TTS_VOICE",
+    "nova" if TTS_BACKEND == "openai" else "en-GB-SoniaNeural"
+)
+logger.info("TTS backend: %s | voice: %s", TTS_BACKEND, TTS_VOICE)
+
 
 async def text_to_speech(text: str, output_path: str) -> bool:
-    """Convert text to 24kHz 16-bit mono PCM using edge-tts. Returns True on success."""
+    """Convert text to 24kHz 16-bit mono PCM. Supports edge-tts and OpenAI TTS."""
+    from pydub import AudioSegment
+    from io import BytesIO
     try:
-        import edge_tts
-        from pydub import AudioSegment
-        from io import BytesIO
+        if TTS_BACKEND == "openai":
+            from openai import OpenAI
+            api_key = os.environ.get("OPENAI_API_KEY", "")
+            if not api_key:
+                logger.error("TTS: OPENAI_API_KEY not set")
+                return False
+            client = OpenAI(api_key=api_key)
+            response = await asyncio.to_thread(
+                client.audio.speech.create,
+                model="tts-1",
+                voice=TTS_VOICE,
+                input=text,
+                response_format="mp3",
+            )
+            mp3_bytes = response.content
+        else:
+            import edge_tts
+            communicate = edge_tts.Communicate(text, TTS_VOICE)
+            mp3_chunks = []
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    mp3_chunks.append(chunk["data"])
+            if not mp3_chunks:
+                logger.error("TTS: edge-tts returned no audio")
+                return False
+            mp3_bytes = b"".join(mp3_chunks)
 
-        communicate = edge_tts.Communicate(text, TTS_VOICE)
-        mp3_chunks = []
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                mp3_chunks.append(chunk["data"])
-
-        if not mp3_chunks:
-            logger.error("TTS: edge-tts returned no audio")
-            return False
-
-        mp3_bytes = b"".join(mp3_chunks)
         audio = AudioSegment.from_mp3(BytesIO(mp3_bytes))
         audio = audio.set_channels(1).set_frame_rate(24000).set_sample_width(2)
-        # Export as raw 16-bit LE PCM (no WAV header)
         with open(output_path, "wb") as f:
             f.write(audio.raw_data)
         return True
@@ -574,7 +813,6 @@ async def ha_event_listener():
                         continue
 
                     logger.info("HA events: listening for state changes (domains: %s)", HA_WATCH_DOMAINS)
-                    await relay_transcript("system", "🏠 Connected to Home Assistant — monitoring device changes")
 
                     # Listen for events
                     async for msg in ws:
@@ -612,7 +850,6 @@ async def ha_event_listener():
                             attrs = new.get("attributes", {})
                             formatted = format_ha_event(entity_id, old_state, new_state, attrs)
                             logger.info("HA event: %s", formatted)
-                            await relay_transcript("system", formatted)
 
                         elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                             logger.warning("HA events: WebSocket closed/error")
@@ -625,124 +862,190 @@ async def ha_event_listener():
 
 
 # ---------------------------------------------------------------------------
-# Main: LiveKit room participant
+# TabletSession — per-tablet room with independent conversation state
 # ---------------------------------------------------------------------------
 
-async def main():
-    url = os.environ["LIVEKIT_URL"]
-    api_key = os.environ["LIVEKIT_API_KEY"]
-    api_secret = os.environ["LIVEKIT_API_SECRET"]
-    room_name = os.environ.get("LIVEKIT_ROOM", "voice-room")
+class TabletSession:
+    """Manages a single tablet's LiveKit room and conversation lifecycle.
 
-    # Generate a token for the agent
-    token = (
-        api.AccessToken(api_key, api_secret)
-        .with_identity("hermes-agent")
-        .with_grants(api.VideoGrants(
-            room_join=True,
-            room=room_name,
-            can_publish=True,
-            can_subscribe=True,
-        ))
-        .to_jwt()
-    )
+    Each tablet gets its own room (voice-room-{device_id}), its own VAD,
+    conversation state, TTS track, and video frame buffer.
+    """
 
-    # Connect to room
-    room = rtc.Room()
-    backend = create_backend()
-    vad = SimpleVAD()
-    processing = False  # Prevent overlapping processing
-    agent_active = False  # IDLE by default, ACTIVE when wake word detected
-    last_speech_time = [0.0]  # Mutable ref for silence timeout tracking
     SILENCE_TIMEOUT = 30  # seconds of no speech before going back to IDLE
 
-    logger.info("Connecting to LiveKit at %s, room=%s", url, room_name)
-    await room.connect(url, token)
-    global _room_ref
-    _room_ref = room
-    logger.info("Connected to room: %s", room_name)
+    def __init__(self, device_id: str, url: str, api_key: str, api_secret: str):
+        self.device_id = device_id
+        self.room_name = f"voice-room-{device_id}"
+        self.url = url
+        self.api_key = api_key
+        self.api_secret = api_secret
 
-    # Activate conversation (called when wake_word_detected received)
-    async def activate():
-        nonlocal processing, agent_active
+        self.room = rtc.Room()
+        self.backend = create_backend()
+        self.vad = SimpleVAD()
+        self.multimodal = MultimodalHandler(device_id)
+
+        self.processing = False
+        self.agent_active = False
+        self.last_speech_time = 0.0
+        self._running = True
+
+        self.tts_source: rtc.AudioSource | None = None
+
+    def log(self, level: str, msg: str, *args):
+        getattr(logger, level)(f"[{self.device_id}] {msg}", *args)
+
+    async def start(self):
+        """Connect to the tablet's room and set up event handlers."""
+        token = (
+            api.AccessToken(self.api_key, self.api_secret)
+            .with_identity(f"hermes-agent-{self.device_id}")
+            .with_grants(api.VideoGrants(
+                room_join=True,
+                room=self.room_name,
+                can_publish=True,
+                can_subscribe=True,
+            ))
+            .to_jwt()
+        )
+
+        self.log("info", "Connecting to room %s", self.room_name)
+        await self.room.connect(self.url, token)
+        self.log("info", "Connected to room %s", self.room_name)
+
+        # Publish TTS audio track
+        self.tts_source = rtc.AudioSource(24000, 1)
+        tts_track = rtc.LocalAudioTrack.create_audio_track(
+            f"hermes-tts-{self.device_id}", self.tts_source
+        )
+        await self.room.local_participant.publish_track(tts_track)
+        self.log("info", "Published TTS audio track")
+
+        # Wire up event handlers
+        self._setup_event_handlers()
+
+        # Start silence timeout checker
+        asyncio.ensure_future(self._silence_timeout_checker())
+
+        self.log("info", "Session ready, waiting for wake word signal")
+
+    def _setup_event_handlers(self):
+        """Register LiveKit room event handlers for this tablet session."""
+
+        @self.room.on("track_subscribed")
+        def on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
+            if track.kind == rtc.TrackKind.KIND_VIDEO:
+                self.log("info", "Subscribed to VIDEO from %s", participant.identity)
+                video_stream = rtc.VideoStream(track)
+                asyncio.ensure_future(capture_video_frames(video_stream, self.device_id))
+            elif track.kind == rtc.TrackKind.KIND_AUDIO:
+                self.log("info", "Subscribed to audio from %s", participant.identity)
+                asyncio.ensure_future(self._process_audio_stream(rtc.AudioStream(track)))
+
+        @self.room.on("data_received")
+        def on_data(data: rtc.DataPacket):
+            try:
+                msg = _json.loads(data.data.decode())
+                msg_type = msg.get("type", "")
+                if msg_type == "wake_word_detected":
+                    score = msg.get("score", 0)
+                    self.log("info", "Wake word detected (score=%s)", score)
+                    if not self.agent_active:
+                        asyncio.ensure_future(self._activate())
+                elif msg_type == "end_conversation":
+                    self.log("info", "End conversation requested")
+                    if self.agent_active:
+                        asyncio.ensure_future(self._deactivate())
+                elif msg_type == "proactive_describe":
+                    # Triggered externally (e.g., HA automation, doorbell)
+                    context = msg.get("context", "")
+                    self.log("info", "Proactive describe requested (context=%s)", context[:50])
+                    asyncio.ensure_future(self._proactive_vision(context))
+            except Exception as e:
+                self.log("debug", "Data parse error: %s", e)
+
+        @self.room.on("participant_connected")
+        def on_participant(participant: rtc.RemoteParticipant):
+            self.log("info", "Participant joined: %s", participant.identity)
+
+    async def _activate(self):
+        """Start a conversation with this tablet."""
         import time as _time
-        agent_active = True
-        last_speech_time[0] = _time.monotonic()
-        processing = True
+        self.agent_active = True
+        self.last_speech_time = _time.monotonic()
+        self.processing = True
         try:
-            logger.info("Agent ACTIVE - starting conversation")
-            await relay_transcript("system", "🌟 Conversation started")
-            greeting = await backend.chat("The user just said the wake word Hey Jarvis. Greet them warmly and briefly.")
-            logger.info("Greeting: %s", greeting)
-            await speak(greeting)
+            self.log("info", "Conversation ACTIVE")
+            await relay_transcript(self.room, "system", "🌟 Conversation started")
+            greeting = await self.backend.chat(
+                "The user just said the wake word Hey Jarvis. Greet them warmly and briefly."
+            )
+            self.log("info", "Greeting: %s", greeting)
+            await self._speak(greeting)
         finally:
-            processing = False
+            self.processing = False
 
-    async def deactivate():
-        nonlocal agent_active
-        agent_active = False
-        logger.info("Agent IDLE - conversation ended")
-        await relay_transcript("system", "💤 Conversation ended, listening for wake word...")
-        # Signal tablet to return to wake word mode
+    async def _deactivate(self):
+        """End conversation, signal tablet to return to wake word mode."""
+        self.agent_active = False
+        self.multimodal.reset()
+        self.log("info", "Conversation IDLE")
+        await relay_transcript(self.room, "system", "💤 Conversation ended")
         try:
             msg = _json.dumps({"type": "conversation_ended"})
-            await room.local_participant.publish_data(msg.encode(), reliable=True, topic="hermes-control")
+            await self.room.local_participant.publish_data(
+                msg.encode(), reliable=True, topic="hermes-control"
+            )
         except Exception:
             pass
 
-    # Silence timeout checker
-    async def silence_timeout_checker():
+    async def _silence_timeout_checker(self):
         import time as _time
-        while True:
+        while self._running:
             await asyncio.sleep(5)
-            if agent_active and not processing:
-                elapsed = _time.monotonic() - last_speech_time[0]
-                if elapsed > SILENCE_TIMEOUT:
-                    logger.info("Silence timeout (%.0fs), deactivating", elapsed)
-                    await deactivate()
+            if self.agent_active and not self.processing:
+                elapsed = _time.monotonic() - self.last_speech_time
+                if elapsed > self.SILENCE_TIMEOUT:
+                    self.log("info", "Silence timeout (%.0fs)", elapsed)
+                    await self._deactivate()
 
-    # Persistent audio source and track for TTS playback
-    tts_source = rtc.AudioSource(24000, 1)
-    tts_track = rtc.LocalAudioTrack.create_audio_track("hermes-tts", tts_source)
-    await room.local_participant.publish_track(tts_track)
-    logger.info("Published TTS audio track")
+    async def _speak(self, text: str):
+        """Speak text via LiveKit TTS audio track.
 
-    async def speak(text: str):
-        """Speak text: either via avatar data channel event or LiveKit TTS audio track."""
+        When avatar is enabled, also sends text via data channel so
+        TalkingHead.js can animate lip sync (its audio output is muted;
+        all audible audio goes through the LiveKit WebRTC track).
+        """
         if AVATAR_ENABLED:
-            # Send text to TalkingHead.js avatar on the tablet instead of playing audio here.
+            # Send text for avatar lip sync (audio muted on avatar side)
             try:
                 msg = _json.dumps({"type": "agent_speak", "text": text})
-                await room.local_participant.publish_data(
+                await self.room.local_participant.publish_data(
                     msg.encode("utf-8"), reliable=True, topic="hermes-control"
                 )
-                logger.info("Avatar speak dispatched (%d chars)", len(text))
             except Exception as e:
-                logger.error("Avatar speak publish failed: %s", e)
-            return
+                self.log("error", "Avatar speak failed: %s", e)
+            # Fall through — audio always published via LiveKit track
 
-        # --- Standard TTS via LiveKit audio track ---
         tmp = tempfile.NamedTemporaryFile(suffix=".pcm", delete=False)
         tmp.close()
         try:
             success = await text_to_speech(text, tmp.name)
             if not success:
                 return
-
             with open(tmp.name, "rb") as f:
                 pcm_data = f.read()
-
             if not pcm_data:
                 return
 
-            # Send audio in frames with proper pacing
             samples_per_frame = 480  # 20ms at 24kHz
-            frame_duration = samples_per_frame / 24000.0  # seconds per frame
+            frame_duration = samples_per_frame / 24000.0
             samples = np.frombuffer(pcm_data, dtype=np.int16)
 
             for i in range(0, len(samples), samples_per_frame):
-                if not agent_active:
-                    logger.info("TTS playback cancelled (agent deactivated)")
+                if not self.agent_active:
+                    self.log("info", "TTS cancelled (deactivated)")
                     break
                 frame_data = samples[i:i + samples_per_frame]
                 if len(frame_data) < samples_per_frame:
@@ -754,63 +1057,42 @@ async def main():
                     num_channels=1,
                     samples_per_channel=samples_per_frame,
                 )
-                await tts_source.capture_frame(frame)
-                await asyncio.sleep(frame_duration * 0.8)  # Slight underrun to keep buffer fed
-
+                await self.tts_source.capture_frame(frame)
+                await asyncio.sleep(frame_duration * 0.8)
         finally:
             try:
                 os.unlink(tmp.name)
             except OSError:
                 pass
 
-    # Handle incoming audio from the user
-    audio_buffer = bytearray()
+    async def _process_audio_stream(self, audio_stream: rtc.AudioStream):
+        """Process audio frames from the tablet: VAD -> STT -> LLM -> TTS."""
+        frame_count = 0
+        async for event in audio_stream:
+            if self.processing or not self.agent_active:
+                continue
 
-    @room.on("track_subscribed")
-    def on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
-        if track.kind == rtc.TrackKind.KIND_VIDEO:
-            logger.info("Subscribed to VIDEO from %s", participant.identity)
-            video_stream = rtc.VideoStream(track)
-            asyncio.ensure_future(capture_video_frames(video_stream))
-        elif track.kind == rtc.TrackKind.KIND_AUDIO:
-            logger.info("Subscribed to audio from %s", participant.identity)
-            audio_stream = rtc.AudioStream(track)
+            frame = event.frame
+            frame_count += 1
+            if frame_count <= 3 or frame_count % 500 == 0:
+                audio_bytes = frame.data.tobytes()
+                rms = np.sqrt(np.mean(np.frombuffer(
+                    audio_bytes[:min(len(audio_bytes), 1000)],
+                    dtype=np.int16).astype(np.float32) ** 2)) if len(audio_bytes) > 0 else 0
+                self.log("info", "Audio frame #%d: sr=%d ch=%d rms=%.0f",
+                         frame_count, frame.sample_rate, frame.num_channels, rms)
 
-            frame_count = 0
+            pcm_16k = resample_48k_to_16k_mono(
+                frame.data.tobytes(), channels=frame.num_channels,
+            )
+            utterance = self.vad.process(pcm_16k)
+            if utterance:
+                self.processing = True
+                asyncio.ensure_future(self._handle_utterance(utterance))
 
-            async def process_audio():
-                nonlocal processing, frame_count
-                async for event in audio_stream:
-                    if processing or not agent_active:
-                        continue
-
-                    frame = event.frame
-                    frame_count += 1
-                    if frame_count <= 3 or frame_count % 500 == 0:
-                        audio_bytes = frame.data.tobytes()
-                        rms = np.sqrt(np.mean(np.frombuffer(audio_bytes[:min(len(audio_bytes), 1000)], dtype=np.int16).astype(np.float32) ** 2)) if len(audio_bytes) > 0 else 0
-                        logger.info("Audio frame #%d: sr=%d ch=%d samples=%d bytes=%d rms=%.0f",
-                                    frame_count, frame.sample_rate, frame.num_channels,
-                                    frame.samples_per_channel, len(audio_bytes), rms)
-
-                    # Resample from 48kHz to 16kHz for VAD/STT
-                    pcm_16k = resample_48k_to_16k_mono(
-                        frame.data.tobytes(),
-                        channels=frame.num_channels,
-                    )
-
-                    # Feed to VAD
-                    utterance = vad.process(pcm_16k)
-                    if utterance:
-                        processing = True
-                        asyncio.ensure_future(handle_utterance(utterance, backend))
-
-            asyncio.ensure_future(process_audio())
-
-    async def handle_utterance(pcm_data: bytes, backend):
-        nonlocal processing
+    async def _handle_utterance(self, pcm_data: bytes):
+        """Process a complete utterance: STT -> multimodal handler -> TTS."""
         try:
-            # PCM -> WAV -> STT
             wav_path = pcm_to_wav(pcm_data, sample_rate=16000)
             try:
                 transcript = await transcribe_audio(wav_path)
@@ -821,65 +1103,121 @@ async def main():
                 return
 
             import time as _time
-            last_speech_time[0] = _time.monotonic()
-            logger.info("User said: %s", transcript)
-            await relay_transcript("user", transcript)
+            self.last_speech_time = _time.monotonic()
+            self.log("info", "User said: %s", transcript)
+            await relay_transcript(self.room, "user", transcript)
 
-            # Check if this is a vision request and we have a camera frame
-            if is_vision_request(transcript) and _latest_frame_jpeg[0] is not None:
-                logger.info("Vision request detected, sending frame to %s", VISION_MODEL)
-                response = await vision_query(transcript, _latest_frame_jpeg[0])
-            else:
-                # Standard text-only backend
-                response = await backend.chat(transcript)
-            logger.info("Response: %s", response[:100])
-            await relay_transcript("assistant", response)
+            # MultimodalHandler decides: vision model (with frame) or text backend
+            response = await self.multimodal.chat(transcript, text_backend=self.backend)
 
-            # TTS and play back
-            await speak(response)
+            self.log("info", "Response: %s", response[:100])
+            await relay_transcript(self.room, "assistant", response)
+            await self._speak(response)
 
         except Exception as e:
-            logger.error("Error processing utterance: %s", e, exc_info=True)
+            self.log("error", "Utterance error: %s", e, exc_info=True)
         finally:
-            processing = False
+            self.processing = False
 
-    # Listen for data messages from tablet (wake word signal)
-    @room.on("data_received")
-    def on_data(data: rtc.DataPacket):
+    async def _proactive_vision(self, context: str = ""):
+        """Proactively describe what the camera sees and speak it.
+
+        Triggered externally via data channel message:
+            {"type": "proactive_describe", "context": "Someone rang the doorbell."}
+        """
+        self.processing = True
         try:
-            msg = _json.loads(data.data.decode())
-            msg_type = msg.get("type", "")
-            if msg_type == "wake_word_detected":
-                score = msg.get("score", 0)
-                logger.info("Received wake_word_detected (score=%s)", score)
-                if not agent_active:
-                    asyncio.ensure_future(activate())
-            elif msg_type == "end_conversation":
-                logger.info("Received end_conversation from tablet")
-                if agent_active:
-                    asyncio.ensure_future(deactivate())
+            description = await self.multimodal.proactive_describe(context)
+            if description:
+                self.log("info", "Proactive vision: %s", description[:100])
+                await relay_transcript(self.room, "assistant", description)
+                await self._speak(description)
+            else:
+                self.log("warning", "Proactive vision: no frame available")
         except Exception as e:
-            logger.debug("Data parse error: %s", e)
+            self.log("error", "Proactive vision error: %s", e)
+        finally:
+            self.processing = False
 
-    @room.on("participant_connected")
-    def on_participant(participant: rtc.RemoteParticipant):
-        logger.info("Participant joined: %s", participant.identity)
+    async def stop(self):
+        self._running = False
+        await self.room.disconnect()
+        self.log("info", "Session stopped")
 
-    logger.info("Agent ready (IDLE mode), waiting for wake word signal...")
 
-    # Start background tasks
+# ---------------------------------------------------------------------------
+# Main: multi-tablet session manager
+# ---------------------------------------------------------------------------
+
+TOKEN_SERVER_URL = os.environ.get("TOKEN_SERVER_URL", "http://localhost:8090")
+DEVICE_POLL_INTERVAL = int(os.environ.get("DEVICE_POLL_INTERVAL", "15"))
+
+
+async def discover_devices() -> list[str]:
+    """Fetch registered device IDs from the token server."""
+    import aiohttp
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{TOKEN_SERVER_URL}/devices", timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return [d["device_id"] for d in data.get("devices", []) if d.get("status") == "online"]
+    except Exception as e:
+        logger.warning("Device discovery failed: %s", e)
+    return []
+
+
+async def main():
+    url = os.environ["LIVEKIT_URL"]
+    api_key = os.environ["LIVEKIT_API_KEY"]
+    api_secret = os.environ["LIVEKIT_API_SECRET"]
+
+    sessions: dict[str, TabletSession] = {}  # device_id -> TabletSession
+
+    logger.info("Multi-tablet agent starting (polling %s every %ds)", TOKEN_SERVER_URL, DEVICE_POLL_INTERVAL)
+
+    # Start shared services
     asyncio.ensure_future(ha_event_listener())
-    asyncio.ensure_future(silence_timeout_checker())
     asyncio.ensure_future(start_snapshot_server())
 
-    # Keep running
+    # Legacy fallback: join the shared "voice-room" for tablets still running
+    # the old APK that hasn't been updated to per-tablet rooms yet.
+    # This session handles ALL old tablets (same cross-talk behavior as before).
+    # Remove this once all tablets are updated.
+    legacy_session = TabletSession("legacy", url, api_key, api_secret)
+    legacy_session.room_name = "voice-room"  # Override the per-tablet name
     try:
-        while True:
-            await asyncio.sleep(1)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        await room.disconnect()
+        await legacy_session.start()
+        sessions["legacy"] = legacy_session
+        logger.info("Legacy shared 'voice-room' session active (for old APK tablets)")
+    except Exception as e:
+        logger.warning("Legacy session failed: %s", e)
+
+    # Device discovery + session management loop
+    while True:
+        try:
+            devices = await discover_devices()
+            # Start sessions for new devices
+            for device_id in devices:
+                if device_id not in sessions:
+                    logger.info("New device discovered: %s, starting session", device_id)
+                    session = TabletSession(device_id, url, api_key, api_secret)
+                    sessions[device_id] = session
+                    try:
+                        await session.start()
+                    except Exception as e:
+                        logger.error("Failed to start session for %s: %s", device_id, e)
+                        del sessions[device_id]
+
+            # Log active sessions periodically
+            if sessions:
+                active = [sid for sid, s in sessions.items() if s.agent_active]
+                logger.debug("Sessions: %d total, %d active conversations", len(sessions), len(active))
+
+        except Exception as e:
+            logger.error("Session manager error: %s", e)
+
+        await asyncio.sleep(DEVICE_POLL_INTERVAL)
 
 
 if __name__ == "__main__":

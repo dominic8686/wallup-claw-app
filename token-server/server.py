@@ -39,6 +39,7 @@ import asyncio
 import json
 import mimetypes
 import os
+import re
 import socket
 import time
 from pathlib import Path
@@ -56,13 +57,31 @@ from zeroconf import IPVersion, ServiceInfo, Zeroconf
 LIVEKIT_API_KEY = os.environ["LIVEKIT_API_KEY"]
 LIVEKIT_API_SECRET = os.environ["LIVEKIT_API_SECRET"]
 LIVEKIT_EXTERNAL_URL = os.environ.get("LIVEKIT_EXTERNAL_URL", "ws://localhost:7880")
-TTS_VOICE = os.environ.get("TTS_VOICE", "en-GB-SoniaNeural")
+
+# TTS_BACKEND  edge-tts (default, free) | openai (requires OPENAI_API_KEY)
+# TTS_VOICE    edge-tts: en-GB-SoniaNeural   openai: nova | alloy | echo | fable | onyx | shimmer
+TTS_BACKEND = os.environ.get("TTS_BACKEND", "edge-tts").strip().lower()
+TTS_VOICE = os.environ.get(
+    "TTS_VOICE",
+    "nova" if TTS_BACKEND == "openai" else "en-GB-SoniaNeural"
+)
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+print(f"  TTS backend: {TTS_BACKEND} | voice: {TTS_VOICE}")
 
 # Path to avatar static files (relative to this script, or absolute)
 AVATAR_DIR = Path(os.environ.get("AVATAR_DIR", Path(__file__).parent.parent / "avatar")).resolve()
 
 STALE_TIMEOUT = 45  # seconds before a device is considered offline
 LONG_POLL_TIMEOUT = 25  # seconds to hold a /signals request
+CALL_RING_TIMEOUT = 60  # seconds before an unanswered call auto-expires
+
+# API key authentication (set via INTERCOM_API_KEY env var)
+# If not set, auth is disabled (LAN-only mode).
+INTERCOM_API_KEY = os.environ.get("INTERCOM_API_KEY", "")
+if INTERCOM_API_KEY:
+    print(f"  Auth: API key enabled ({len(INTERCOM_API_KEY)} chars)")
+else:
+    print("  Auth: DISABLED (set INTERCOM_API_KEY to enable)")
 
 # ---------------------------------------------------------------------------
 # In-memory device registry
@@ -104,6 +123,23 @@ def _mark_stale_devices() -> None:
         signal_queues.pop(device_id, None)
 
 
+def _expire_stale_calls() -> None:
+    """Auto-cancel calls stuck in 'ringing' for too long."""
+    now = time.time()
+    expired = [
+        cid for cid, c in active_calls.items()
+        if c.get("status") == "ringing" and (now - c.get("started_at", now)) > CALL_RING_TIMEOUT
+    ]
+    for cid in expired:
+        call = active_calls.pop(cid)
+        # Reset device states
+        if call["from"] in device_registry:
+            device_registry[call["from"]]["call_state"] = "idle"
+        if call["to"] in device_registry:
+            device_registry[call["to"]]["call_state"] = "idle"
+        print(f"[calls] Expired stale call: {cid}")
+
+
 def _device_to_dict(device_id: str, info: dict) -> dict:
     return {
         "device_id": device_id,
@@ -122,8 +158,33 @@ def _device_to_dict(device_id: str, info: dict) -> dict:
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
 }
+
+# Paths that don't require authentication
+_PUBLIC_PATHS = {"/health", "/avatar"}
+
+
+@web.middleware
+async def auth_middleware(request: web.Request, handler):
+    """Check Bearer token on all endpoints except health and OPTIONS."""
+    if not INTERCOM_API_KEY:
+        return await handler(request)  # Auth disabled
+    if request.method == "OPTIONS":
+        return await handler(request)  # CORS preflight
+    if request.path in _PUBLIC_PATHS or request.path.startswith("/avatar/"):
+        return await handler(request)
+
+    auth = request.headers.get("Authorization", "")
+    if auth == f"Bearer {INTERCOM_API_KEY}":
+        return await handler(request)
+
+    return web.Response(
+        text=json.dumps({"error": "Unauthorized"}),
+        content_type="application/json",
+        status=401,
+        headers=CORS_HEADERS,
+    )
 
 
 def _json_response(data: Any, status: int = 200) -> web.Response:
@@ -220,6 +281,7 @@ async def handle_heartbeat(request: web.Request) -> web.Response:
 async def handle_devices(request: web.Request) -> web.Response:
     """Return list of all registered devices with current status."""
     _mark_stale_devices()
+    _expire_stale_calls()
     devices = [
         _device_to_dict(did, info)
         for did, info in device_registry.items()
@@ -250,6 +312,7 @@ async def handle_signal(request: web.Request) -> web.Response:
         return _json_response({"error": f"device '{to_device}' not registered"}, 404)
 
     _mark_stale_devices()
+    _expire_stale_calls()
     target_info = device_registry[to_device]
 
     # --- Call state machine ---
@@ -409,39 +472,98 @@ async def handle_health(request: web.Request) -> web.Response:
 
 
 async def handle_tts(request: web.Request) -> web.Response:
-    """Generate speech using edge-tts (free, no API key required).
+    """Generate speech via edge-tts or OpenAI TTS.
 
-    GET /tts?text=<text>&voice=<voice>
-    Returns audio/mpeg stream.
+    Supports two call formats:
+      GET  /tts?text=<text>[&voice=<voice>]  → audio/mpeg binary
+      POST /tts  (Google Cloud TTS JSON body)  → {audioContent: base64}
+
+    TTS backend is selected by the TTS_BACKEND env var (edge-tts | openai).
     """
-    text = request.query.get("text", "").strip()
+    import base64
+
+    # --- Determine text and extract SSML marks (voice always from server config) ---
+    mark_names: list = []
+    if request.method == "POST":
+        try:
+            body = await request.json()
+        except Exception:
+            return web.Response(text="invalid JSON", status=400, headers=CORS_HEADERS)
+        inp = body.get("input", {})
+        ssml = (inp.get("ssml") or "").strip()
+        if ssml:
+            # Extract <mark name="..."/> tags (TalkingHead needs these back as timepoints)
+            mark_names = re.findall(r'<mark\s+name=["\']([^"\']+)["\']', ssml)
+            # Strip SSML tags to get speakable plain text
+            text = re.sub(r'<[^>]+>', ' ', ssml)
+            text = re.sub(r'\s+', ' ', text).strip()
+        else:
+            text = (inp.get("text") or "").strip()
+    else:
+        text = request.query.get("text", "").strip()
+
     if not text:
         return web.Response(text="text parameter required", status=400, headers=CORS_HEADERS)
 
-    voice = request.query.get("voice", TTS_VOICE)
-
     try:
-        import edge_tts
-        communicate = edge_tts.Communicate(text, voice)
-        mp3_chunks = []
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                mp3_chunks.append(chunk["data"])
+        if TTS_BACKEND == "openai":
+            if not OPENAI_API_KEY:
+                return web.Response(text="OPENAI_API_KEY not set", status=503, headers=CORS_HEADERS)
+            import asyncio
+            from openai import OpenAI
+            client = OpenAI(api_key=OPENAI_API_KEY)
+            response = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: client.audio.speech.create(
+                    model="tts-1",
+                    voice=TTS_VOICE,
+                    input=text,
+                    response_format="mp3",
+                )
+            )
+            audio_bytes = response.content
+        else:
+            import edge_tts
+            communicate = edge_tts.Communicate(text, TTS_VOICE)
+            mp3_chunks = []
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    mp3_chunks.append(chunk["data"])
+            if not mp3_chunks:
+                return web.Response(text="TTS returned no audio", status=502, headers=CORS_HEADERS)
+            audio_bytes = b"".join(mp3_chunks)
 
-        if not mp3_chunks:
-            return web.Response(text="TTS returned no audio", status=502, headers=CORS_HEADERS)
+        # POST callers (TalkingHead) expect Google TTS JSON response + timepoints
+        if request.method == "POST":
+            # Generate approximate timepoints for lip sync.
+            # Estimate total duration from word count (~0.4 s/word at 150 wpm).
+            words = text.split()
+            total_dur = max(len(words), 1) * 0.4
+            if mark_names:
+                interval = total_dur / len(mark_names)
+                timepoints = [
+                    {"markName": name, "timeSeconds": round(i * interval, 3)}
+                    for i, name in enumerate(mark_names)
+                ]
+            else:
+                timepoints = []
+            return web.Response(
+                text=json.dumps({
+                    "audioContent": base64.b64encode(audio_bytes).decode(),
+                    "timepoints": timepoints,
+                }),
+                content_type="application/json",
+                headers=CORS_HEADERS,
+            )
 
-        audio_bytes = b"".join(mp3_chunks)
+        # GET callers get raw MP3
         return web.Response(
             body=audio_bytes,
             content_type="audio/mpeg",
-            headers={
-                **CORS_HEADERS,
-                "Cache-Control": "no-cache",
-            },
+            headers={**CORS_HEADERS, "Cache-Control": "no-cache"},
         )
     except Exception as e:
-        print(f"[tts] edge-tts error: {e}")
+        print(f"[tts] error ({TTS_BACKEND}): {e}")
         return web.Response(text=f"TTS error: {e}", status=500, headers=CORS_HEADERS)
 
 
@@ -526,14 +648,15 @@ def _unregister_mdns() -> None:
 # App setup
 # ---------------------------------------------------------------------------
 
-app = web.Application()
+app = web.Application(middlewares=[auth_middleware])
 
 # Token & health
 app.router.add_get("/token", handle_token)
 app.router.add_get("/health", handle_health)
 
-# TTS proxy
+# TTS proxy — GET (simple) + POST (TalkingHead / Google TTS format)
 app.router.add_get("/tts", handle_tts)
+app.router.add_post("/tts", handle_tts)
 app.router.add_route("OPTIONS", "/tts", handle_options)
 
 # Avatar static files

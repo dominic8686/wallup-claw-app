@@ -133,7 +133,7 @@ fun ConversationCard(
                 },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(0.45f)
+                    .weight(0.65f)
                     .clip(RoundedCornerShape(8.dp))
                     .background(Color.Black)
             )

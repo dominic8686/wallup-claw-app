@@ -328,7 +328,7 @@ fun MainDashboardScreen() {
             // Connect to LiveKit with device identity
             try {
                 val response = withContext(Dispatchers.IO) {
-                    URL("$tokenServerUrl/token?identity=$effectiveDeviceId&room=voice-room").readText()
+                    URL("$tokenServerUrl/token?identity=$effectiveDeviceId&room=voice-room-$effectiveDeviceId").readText()
                 }
                 val json = JSONObject(response)
                 val token = json.getString("token")
@@ -358,14 +358,33 @@ fun MainDashboardScreen() {
                 val hbBody = JSONObject().apply {
                     put("device_id", effectiveDeviceId)
                 }
-                withContext(Dispatchers.IO) {
+                val hbConn = withContext(Dispatchers.IO) {
                     val conn = java.net.URL("$tokenServerUrl/heartbeat").openConnection() as java.net.HttpURLConnection
                     conn.requestMethod = "POST"
                     conn.setRequestProperty("Content-Type", "application/json")
                     conn.doOutput = true
                     conn.outputStream.write(hbBody.toString().toByteArray())
-                    conn.inputStream.bufferedReader().readText()
-                    conn.disconnect()
+                    conn.responseCode
+                }
+                if (hbConn == 404) {
+                    // Server restarted and lost the registry — re-register
+                    Log.w(TAG, "Heartbeat 404 — re-registering device")
+                    withContext(Dispatchers.IO) {
+                        val regBody = JSONObject().apply {
+                            put("device_id", effectiveDeviceId)
+                            put("display_name", deviceDisplayName.ifEmpty { effectiveDeviceId })
+                            put("room_location", deviceRoomLocation)
+                        }
+                        val conn = java.net.URL("$tokenServerUrl/register").openConnection() as java.net.HttpURLConnection
+                        conn.connectTimeout = 5_000
+                        conn.requestMethod = "POST"
+                        conn.setRequestProperty("Content-Type", "application/json")
+                        conn.doOutput = true
+                        conn.outputStream.write(regBody.toString().toByteArray())
+                        conn.inputStream.bufferedReader().readText()
+                        conn.disconnect()
+                    }
+                    Log.i(TAG, "Re-registered after 404")
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Heartbeat failed: ${e.message}")
@@ -434,7 +453,7 @@ fun MainDashboardScreen() {
         }
     }
 
-    // --- Listen for LiveKit room events (always active) ---
+    // --- Listen for LiveKit room events; reconnect on disconnect ---
     LaunchedEffect(roomConnected) {
         if (!roomConnected) return@LaunchedEffect
         Log.i(TAG, "Starting room event listener (persistent)")
@@ -442,6 +461,10 @@ fun MainDashboardScreen() {
         room.events.collect { event ->
             Log.d(TAG, "Room event: ${event::class.simpleName}")
             when (event) {
+                is RoomEvent.Disconnected -> {
+                    Log.w(TAG, "Room disconnected — will reconnect")
+                    roomConnected = false  // triggers retry loop
+                }
                 is RoomEvent.TranscriptionReceived -> {
                     for (segment in event.transcriptionSegments) {
                         val isUser = event.participant?.identity == room.localParticipant.identity

@@ -38,10 +38,19 @@ services:
       # Examples: openai/gpt-4o-mini  google/gemini-2.0-flash  anthropic/claude-3-haiku
       - AGENT_MODEL=openai/gpt-4o-mini
 
+      # --- TTS backend ---
+      # TTS_BACKEND=edge-tts   Free Microsoft neural voices, no API key needed
+      # TTS_BACKEND=openai     OpenAI TTS (tts-1), requires OPENAI_API_KEY
+      # TTS_VOICE              Voice name matching the selected backend
+      #   edge-tts examples:  en-GB-SoniaNeural  en-US-JennyNeural
+      #   openai examples:    nova  alloy  echo  fable  onyx  shimmer
+      - TTS_BACKEND=openai
+      - TTS_VOICE=nova
+
       # --- Avatar mode ---
       # Set AVATAR_ENABLED=true to use the TalkingHead.js avatar instead of LiveKit TTS.
       # The agent will send text via data channel; the avatar page handles TTS + lip sync.
-      - AVATAR_ENABLED=false
+      - AVATAR_ENABLED=true
 
       # --- Vision AI ---
       # Model used for visual queries ("what do you see?"). Must support image input.
@@ -51,6 +60,18 @@ services:
       # Serves latest camera frame as JPEG at GET /snapshot.
       # With network_mode: host, this port is directly accessible on the LXC IP.
       - SNAPSHOT_PORT=8091
+
+      # --- RTSP bridge (LiveKit video -> mediamtx -> HA/Frigate) ---
+      # Each tablet publishes to rtsp://<host>:8554/tablet-<device_id>
+      - RTSP_ENABLED=true
+      - RTSP_SERVER=rtsp://localhost:8554
+      - RTSP_FPS=5
+
+      # --- Multi-tablet session manager ---
+      # Agent polls token server to discover registered tablets and joins
+      # per-tablet rooms (voice-room-{device_id}).
+      - TOKEN_SERVER_URL=http://localhost:8090
+      - DEVICE_POLL_INTERVAL=15
 
       # OpenRouter — LLM (all modes) + STT transcription
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
@@ -64,6 +85,14 @@ services:
       - livekit-server
     restart: unless-stopped
 
+  # RTSP relay server — receives RTSP publish from voice-agent's ffmpeg bridge
+  # and serves live camera streams to HA / Frigate / VLC.
+  # Each tablet gets its own path: rtsp://<host>:8554/tablet-<device_id>
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    network_mode: host
+    restart: unless-stopped
+
   token-server:
     build: ./token-server
     network_mode: host
@@ -72,8 +101,11 @@ services:
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
       - LIVEKIT_EXTERNAL_URL=ws://${CT200_HOST}:7880
       - PORT=8090
-      # Override avatar dir path inside the container
       - AVATAR_DIR=/app/avatar
+      # TTS backend (mirrors voice-agent setting so TalkingHead uses the same voice)
+      - TTS_BACKEND=openai
+      - TTS_VOICE=nova
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
     volumes:
       # Mount avatar static files so they are served at GET /avatar
       - ./avatar:/app/avatar:ro

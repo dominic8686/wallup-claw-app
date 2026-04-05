@@ -15,6 +15,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 import homeassistant.helpers.config_validation as cv
 
 from .const import (
@@ -180,7 +181,7 @@ def _register_services(hass: HomeAssistant, coordinator: HermesIntercomCoordinat
                 "call_id": result.get("call_id"),
                 "from": source,
                 "to": target,
-                "started_at": coordinator.hass.helpers.event.dt_util.utcnow().isoformat(),
+                "started_at": dt_util.utcnow().isoformat(),
                 "status": "ringing",
                 "duration": None,
             }

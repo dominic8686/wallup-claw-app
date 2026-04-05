@@ -38,18 +38,42 @@
   <div id="avatar-container"></div>
   <div id="status">Loading avatar…</div>
 
+  <!-- Mute Web Audio output: lip sync still runs but audio comes via LiveKit -->
+  <script>
+  (function() {
+    var gainNodes = new WeakMap();
+    var origConnect = AudioNode.prototype.connect;
+    AudioNode.prototype.connect = function(dest) {
+      if (dest instanceof AudioDestinationNode) {
+        var g = gainNodes.get(dest);
+        if (!g) {
+          g = dest.context.createGain();
+          g.gain.value = 0;
+          origConnect.call(g, dest);
+          gainNodes.set(dest, g);
+        }
+        var args = Array.prototype.slice.call(arguments);
+        args[0] = g;
+        return origConnect.apply(this, args);
+      }
+      return origConnect.apply(this, arguments);
+    };
+  })();
+  </script>
+
   <!-- Three.js (required by TalkingHead) -->
   <script type="importmap">
   {
     "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
-      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+      "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js/+esm",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+      "talkinghead": "https://cdn.jsdelivr.net/gh/met4citizen/TalkingHead@1.7/modules/talkinghead.mjs"
     }
   }
   </script>
 
   <script type="module">
-    import { TalkingHead } from "https://cdn.jsdelivr.net/gh/met4citizen/TalkingHead@1/modules/talkinghead.mjs";
+    import { TalkingHead } from "talkinghead";
 
     const statusEl = document.getElementById("status");
     const container = document.getElementById("avatar-container");
@@ -63,9 +87,8 @@
     // Free ReadyPlayerMe avatar (half-body, neutral)
     // Replace with any other .glb/.vrm URL hosted on the same server or a CDN.
     // ---------------------------------------------------------------------------
-    const AVATAR_URL =
-      "https://models.readyplayer.me/64bfa15f0e72c63d7c3934a6.glb" +
-      "?morphTargets=ARKit,Oculus+Visemes&textureAtlas=1024";
+    // Avatar model served locally — no CDN dependency
+    const AVATAR_URL = window.location.origin + "/avatar/brunette.glb";
 
     // ---------------------------------------------------------------------------
     // Initialise TalkingHead
@@ -88,7 +111,7 @@
           body: "F",
           avatarMood: "neutral",
           ttsLang: "en-GB",
-          ttsVoice: "en-GB-Neural2-C",
+          ttsVoice: "en-GB-SoniaNeural",
           lipsyncLang: "en",
         },
         (ev) => {
