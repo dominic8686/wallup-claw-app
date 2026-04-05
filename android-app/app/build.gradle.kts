@@ -21,8 +21,8 @@ android {
         applicationId = "io.livekit.android.example.voiceassistant"
         minSdk = 24
         targetSdk = 36
-        versionCode = 6
-        versionName = "1.5"
+        versionCode = 7
+        versionName = "1.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -102,6 +102,9 @@ dependencies {
     // Emoji support (ensures emojis render on all devices)
     implementation("androidx.emoji2:emoji2:1.5.0")
     implementation("androidx.emoji2:emoji2-bundled:1.5.0")
+
+    // DLNA/UPnP MediaRenderer — lightweight HTTP server for UPnP control
+    implementation("org.nanohttpd:nanohttpd:2.3.1")
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
