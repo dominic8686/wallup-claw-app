@@ -239,6 +239,20 @@ def _register_services(hass: HomeAssistant, coordinator: HermesIntercomCoordinat
                 "call_id": call_id,
             })
             if result.get("ok"):
+                # Update last_call with ended status and duration
+                if coordinator.last_call and coordinator.last_call.get("call_id") == call_id:
+                    started = coordinator.last_call.get("started_at", "")
+                    coordinator.last_call["status"] = "ended"
+                    coordinator.last_call["ended_at"] = dt_util.utcnow().isoformat()
+                    if started:
+                        try:
+                            start_dt = dt_util.parse_datetime(started)
+                            if start_dt:
+                                dur = (dt_util.utcnow() - start_dt).total_seconds()
+                                coordinator.last_call["duration"] = int(dur)
+                        except Exception:
+                            pass
+                    coordinator.async_set_updated_data(coordinator.data)
                 hass.bus.async_fire(EVENT_CALL_ENDED, {
                     "call_id": call_id,
                     "from": source,

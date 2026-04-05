@@ -43,7 +43,6 @@ fun SettingsDrawer(
     val avatarEnabled by settings.avatarEnabled.collectAsState(initial = false)
     val deviceId by settings.deviceId.collectAsState(initial = AppSettings.DEFAULT_DEVICE_ID)
     val deviceDisplayName by settings.deviceDisplayName.collectAsState(initial = AppSettings.DEFAULT_DEVICE_DISPLAY_NAME)
-    val deviceRoomLocation by settings.deviceRoomLocation.collectAsState(initial = AppSettings.DEFAULT_DEVICE_ROOM_LOCATION)
     val autoUpdateEnabled by settings.autoUpdateEnabled.collectAsState(initial = false)
 
     // Scrim + drawer
@@ -125,22 +124,6 @@ fun SettingsDrawer(
                         if (displayNameEdit != deviceDisplayName) {
                             TextButton(onClick = {
                                 scope.launch { settings.setDeviceDisplayName(displayNameEdit) }
-                            }) { Text("Save") }
-                        }
-                    }
-                )
-
-                var roomEdit by remember(deviceRoomLocation) { mutableStateOf(deviceRoomLocation) }
-                OutlinedTextField(
-                    value = roomEdit,
-                    onValueChange = { roomEdit = it },
-                    label = { Text("Room Location") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    trailingIcon = {
-                        if (roomEdit != deviceRoomLocation) {
-                            TextButton(onClick = {
-                                scope.launch { settings.setDeviceRoomLocation(roomEdit) }
                             }) { Text("Save") }
                         }
                     }

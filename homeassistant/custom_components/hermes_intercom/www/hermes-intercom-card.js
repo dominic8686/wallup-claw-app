@@ -135,6 +135,16 @@ class HermesIntercomCard extends HTMLElement {
     this._muted = false;
     this._cameraOff = false;
     this._lastCallInfo = null;
+    // Restore last call from localStorage
+    try {
+      const saved = localStorage.getItem("hermes_intercom_last_call");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        parsed.startedAt = new Date(parsed.startedAt);
+        this._lastCallInfo = parsed;
+        this._renderLastCall();
+      }
+    } catch (e) {}
     this._startPolling();
     loadLiveKitSDK().catch(e => console.warn("LiveKit SDK preload failed:", e));
   }
@@ -332,6 +342,10 @@ class HermesIntercomCard extends HTMLElement {
         startedAt: new Date(this._callStartTime),
         duration: `${Math.floor(duration / 60)}:${String(duration % 60).padStart(2, "0")}`,
       };
+      // Persist to localStorage
+      try {
+        localStorage.setItem("hermes_intercom_last_call", JSON.stringify(this._lastCallInfo));
+      } catch (e) {}
     }
     if (this._room) { try { this._room.disconnect(); } catch (e) {} this._room = null; }
     const audioEl = this.querySelector("#hermes-call-audio");
