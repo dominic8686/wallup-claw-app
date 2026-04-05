@@ -1,12 +1,11 @@
 package com.wallupclaw.app.intercom
 
 import android.util.Log
+import com.wallupclaw.app.util.TokenServerClient
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 
 private const val TAG = "IntercomManager"
 
@@ -32,6 +31,7 @@ data class CallSession(
 class IntercomManager(
     private val tokenServerUrl: String,
     private val myDeviceId: String,
+    private val client: TokenServerClient,
 ) {
     private val _state = MutableStateFlow(IntercomState.IDLE)
     val state: StateFlow<IntercomState> = _state
@@ -56,7 +56,7 @@ class IntercomManager(
             Log.i(TAG, "Signal polling started for device=$myDeviceId")
             while (isActive) {
                 try {
-                    val response = URL("$tokenServerUrl/signals?device_id=$myDeviceId").readText()
+                    val response = client.longPollGet("/signals?device_id=$myDeviceId")
                     val json = JSONObject(response)
                     val signals = json.getJSONArray("signals")
                     for (i in 0 until signals.length()) {
@@ -224,13 +224,7 @@ class IntercomManager(
     }
 
     private fun postSignal(body: JSONObject): JSONObject {
-        val conn = URL("$tokenServerUrl/signal").openConnection() as HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.setRequestProperty("Content-Type", "application/json")
-        conn.doOutput = true
-        conn.outputStream.write(body.toString().toByteArray())
-        val responseText = conn.inputStream.bufferedReader().readText()
-        conn.disconnect()
+        val responseText = client.post("/signal", body.toString())
         return JSONObject(responseText)
     }
 

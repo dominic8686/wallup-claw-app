@@ -45,13 +45,13 @@ import com.wallupclaw.app.state.DeviceState
 import com.wallupclaw.app.state.DeviceStateManager
 import com.wallupclaw.app.ui.*
 import com.wallupclaw.app.util.HomeAssistantDetector
+import com.wallupclaw.app.util.TokenServerClient
 import kotlinx.coroutines.*
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.runtime.snapshotFlow
 import kotlinx.serialization.Serializable
 import org.json.JSONObject
-import java.net.URL
 
 private const val TAG = "MainDashboard"
 
@@ -82,6 +82,12 @@ fun MainDashboardScreen() {
     val deviceId by appSettings.deviceId.collectAsState(initial = "__LOADING__")
     val deviceDisplayName by appSettings.deviceDisplayName.collectAsState(initial = AppSettings.DEFAULT_DEVICE_DISPLAY_NAME)
     val deviceRoomLocation by appSettings.deviceRoomLocation.collectAsState(initial = AppSettings.DEFAULT_DEVICE_ROOM_LOCATION)
+    val intercomApiKey by appSettings.intercomApiKey.collectAsState(initial = "")
+
+    // --- Token server HTTP client (attaches auth header) ---
+    val tokenServerClient = remember(tokenServerUrl) { TokenServerClient(tokenServerUrl) }
+    // Keep API key in sync
+    LaunchedEffect(intercomApiKey) { tokenServerClient.apiKey = intercomApiKey }
 
     // --- Voice state ---
     var voiceState by remember { mutableStateOf(VoiceState.INITIALIZING) }
@@ -246,7 +252,7 @@ fun MainDashboardScreen() {
 
     // --- Intercom ---
     val intercomManager = remember(tokenServerUrl, effectiveDeviceId) {
-        IntercomManager(tokenServerUrl, effectiveDeviceId)
+        IntercomManager(tokenServerUrl, effectiveDeviceId, tokenServerClient)
     }
     val intercomState by intercomManager.state.collectAsState()
     val currentCall by intercomManager.currentCall.collectAsState()
@@ -267,7 +273,7 @@ fun MainDashboardScreen() {
                 try {
                     val cr = LiveKit.create(context)
                     val tokenResp = withContext(Dispatchers.IO) {
-                        URL("$tokenServerUrl/token?identity=$effectiveDeviceId&room=${call.roomName}").readText()
+                        tokenServerClient.get("/token?identity=$effectiveDeviceId&room=${call.roomName}")
                     }
                     val tokenJson = JSONObject(tokenResp)
                     cr.connect(livekitUrl, tokenJson.getString("token"))
@@ -328,14 +334,7 @@ fun MainDashboardScreen() {
                     put("room_location", deviceRoomLocation)
                 }
                 withContext(Dispatchers.IO) {
-                    val conn = java.net.URL("$tokenServerUrl/register").openConnection() as java.net.HttpURLConnection
-                    conn.connectTimeout = 5_000
-                    conn.requestMethod = "POST"
-                    conn.setRequestProperty("Content-Type", "application/json")
-                    conn.doOutput = true
-                    conn.outputStream.write(regBody.toString().toByteArray())
-                    conn.inputStream.bufferedReader().readText()
-                    conn.disconnect()
+                    tokenServerClient.post("/register", regBody.toString())
                 }
                 Log.i(TAG, "Device registered: $effectiveDeviceId")
             } catch (e: Exception) {
@@ -347,7 +346,7 @@ fun MainDashboardScreen() {
             // Connect to LiveKit with device identity
             try {
                 val response = withContext(Dispatchers.IO) {
-                    URL("$tokenServerUrl/token?identity=$effectiveDeviceId&room=voice-room-$effectiveDeviceId").readText()
+                    tokenServerClient.get("/token?identity=$effectiveDeviceId&room=voice-room-$effectiveDeviceId")
                 }
                 val json = JSONObject(response)
                 val token = json.getString("token")
@@ -398,16 +397,10 @@ fun MainDashboardScreen() {
                 val hbBody = JSONObject().apply {
                     put("device_id", effectiveDeviceId)
                 }
-                val hbConn = withContext(Dispatchers.IO) {
-                    val conn = java.net.URL("$tokenServerUrl/heartbeat").openConnection() as java.net.HttpURLConnection
-                    conn.requestMethod = "POST"
-                    conn.setRequestProperty("Content-Type", "application/json")
-                    conn.doOutput = true
-                    conn.outputStream.write(hbBody.toString().toByteArray())
-                    conn.responseCode
+                val hbCode = withContext(Dispatchers.IO) {
+                    tokenServerClient.postGetCode("/heartbeat", hbBody.toString())
                 }
-                if (hbConn == 404) {
-                    // Server restarted and lost the registry — re-register
+                if (hbCode == 404) {
                     Log.w(TAG, "Heartbeat 404 — re-registering device")
                     withContext(Dispatchers.IO) {
                         val regBody = JSONObject().apply {
@@ -415,14 +408,7 @@ fun MainDashboardScreen() {
                             put("display_name", deviceDisplayName.ifEmpty { effectiveDeviceId })
                             put("room_location", deviceRoomLocation)
                         }
-                        val conn = java.net.URL("$tokenServerUrl/register").openConnection() as java.net.HttpURLConnection
-                        conn.connectTimeout = 5_000
-                        conn.requestMethod = "POST"
-                        conn.setRequestProperty("Content-Type", "application/json")
-                        conn.doOutput = true
-                        conn.outputStream.write(regBody.toString().toByteArray())
-                        conn.inputStream.bufferedReader().readText()
-                        conn.disconnect()
+                        tokenServerClient.post("/register", regBody.toString())
                     }
                     Log.i(TAG, "Re-registered after 404")
                 }
@@ -433,7 +419,7 @@ fun MainDashboardScreen() {
             // Poll for pending config from HA
             try {
                 val configResp = withContext(Dispatchers.IO) {
-                    URL("$tokenServerUrl/configure?device_id=$effectiveDeviceId").readText()
+                    tokenServerClient.get("/configure?device_id=$effectiveDeviceId")
                 }
                 val configJson = JSONObject(configResp)
                 val config = configJson.optJSONObject("config")
@@ -741,6 +727,7 @@ fun MainDashboardScreen() {
                             ContactsPanel(
                                 tokenServerUrl = tokenServerUrl,
                                 myDeviceId = effectiveDeviceId,
+                                client = tokenServerClient,
                                 onCallDevice = { targetId ->
                                     scope.launch {
                                         val result = intercomManager.callDevice(targetId)

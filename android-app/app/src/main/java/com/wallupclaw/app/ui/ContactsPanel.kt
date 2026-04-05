@@ -17,11 +17,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.wallupclaw.app.util.TokenServerClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
-import java.net.URL
 
 private const val TAG = "ContactsPanel"
 
@@ -37,6 +37,7 @@ data class DeviceInfo(
 fun ContactsPanel(
     tokenServerUrl: String,
     myDeviceId: String,
+    client: TokenServerClient,
     onCallDevice: (String) -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
@@ -48,7 +49,7 @@ fun ContactsPanel(
         while (true) {
             try {
                 val response = withContext(Dispatchers.IO) {
-                    URL("$tokenServerUrl/devices").readText()
+                    client.get("/devices")
                 }
                 val json = JSONObject(response)
                 val arr = json.getJSONArray("devices")
