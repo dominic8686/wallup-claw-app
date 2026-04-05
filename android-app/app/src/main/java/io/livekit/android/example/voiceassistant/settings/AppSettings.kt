@@ -37,8 +37,12 @@ val BUNDLED_MODELS = listOf(
 )
 
 enum class UpdateInterval(val id: String, val displayName: String, val millis: Long) {
+    EVERY_5MIN("every_5min", "Every 5 minutes", 300_000L),
+    EVERY_15MIN("every_15min", "Every 15 minutes", 900_000L),
+    EVERY_30MIN("every_30min", "Every 30 minutes", 1_800_000L),
     HOURLY("hourly", "Every hour", 3_600_000L),
     EVERY_6H("every_6h", "Every 6 hours", 21_600_000L),
+    EVERY_12H("every_12h", "Every 12 hours", 43_200_000L),
     DAILY("daily", "Every day", 86_400_000L),
     WEEKLY("weekly", "Every week", 604_800_000L);
 
