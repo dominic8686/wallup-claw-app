@@ -264,17 +264,14 @@ fun SettingsDrawer(
                 var apiKeyEdit by remember(intercomApiKey) { mutableStateOf(intercomApiKey) }
                 OutlinedTextField(
                     value = apiKeyEdit,
-                    onValueChange = { apiKeyEdit = it },
+                    onValueChange = {
+                        apiKeyEdit = it
+                        // Auto-save API key on every change (no Save button needed)
+                        scope.launch { settings.setIntercomApiKey(it) }
+                    },
                     label = { Text("Intercom API Key") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
-                    trailingIcon = {
-                        if (apiKeyEdit != intercomApiKey) {
-                            TextButton(onClick = {
-                                scope.launch { settings.setIntercomApiKey(apiKeyEdit) }
-                            }) { Text("Save") }
-                        }
-                    }
                 )
 
                 HorizontalDivider()
