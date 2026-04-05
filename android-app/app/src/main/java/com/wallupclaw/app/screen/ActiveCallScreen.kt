@@ -30,6 +30,8 @@ data class ActiveCallInfo(
 fun ActiveCallScreen(
     callInfo: ActiveCallInfo,
     onHangup: () -> Unit,
+    onToggleMic: ((Boolean) -> Unit)? = null,
+    onToggleCamera: ((Boolean) -> Unit)? = null,
     remoteVideoTrack: VideoTrack? = null,
     localVideoTrack: VideoTrack? = null,
 ) {
@@ -108,24 +110,85 @@ fun ActiveCallScreen(
             )
         }
 
-        // Hangup button — bottom center
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
+        // Call controls — bottom center
+        var micMuted by remember { mutableStateOf(false) }
+        var cameraOff by remember { mutableStateOf(false) }
+
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(24.dp),
+            verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 48.dp),
         ) {
-            Button(
-                onClick = onHangup,
-                shape = CircleShape,
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF44336)),
-                contentPadding = PaddingValues(20.dp),
-                modifier = Modifier.size(72.dp),
-            ) {
-                Text("✕", fontSize = 28.sp, color = Color.White)
+            // Mic mute toggle
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Button(
+                    onClick = {
+                        micMuted = !micMuted
+                        onToggleMic?.invoke(!micMuted)
+                    },
+                    shape = CircleShape,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (micMuted) Color(0xFFFF9800) else Color.White.copy(alpha = 0.2f)
+                    ),
+                    contentPadding = PaddingValues(16.dp),
+                    modifier = Modifier.size(60.dp),
+                ) {
+                    Text(
+                        if (micMuted) "🔇" else "🎤",
+                        fontSize = 24.sp,
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    if (micMuted) "Unmute" else "Mute",
+                    color = Color.White.copy(alpha = 0.7f),
+                    fontSize = 12.sp,
+                )
             }
-            Spacer(Modifier.height(8.dp))
-            Text("Hang Up", color = Color.White.copy(alpha = 0.7f), fontSize = 14.sp)
+
+            // Hangup button
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Button(
+                    onClick = onHangup,
+                    shape = CircleShape,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF44336)),
+                    contentPadding = PaddingValues(20.dp),
+                    modifier = Modifier.size(72.dp),
+                ) {
+                    Text("✕", fontSize = 28.sp, color = Color.White)
+                }
+                Spacer(Modifier.height(4.dp))
+                Text("Hang Up", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
+            }
+
+            // Camera toggle
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Button(
+                    onClick = {
+                        cameraOff = !cameraOff
+                        onToggleCamera?.invoke(!cameraOff)
+                    },
+                    shape = CircleShape,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (cameraOff) Color(0xFFFF9800) else Color.White.copy(alpha = 0.2f)
+                    ),
+                    contentPadding = PaddingValues(16.dp),
+                    modifier = Modifier.size(60.dp),
+                ) {
+                    Text(
+                        if (cameraOff) "🚫" else "📷",
+                        fontSize = 24.sp,
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    if (cameraOff) "Camera On" else "Camera Off",
+                    color = Color.White.copy(alpha = 0.7f),
+                    fontSize = 12.sp,
+                )
+            }
         }
 
         // Local video — small PiP in top-right corner

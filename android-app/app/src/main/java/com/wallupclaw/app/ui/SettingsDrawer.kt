@@ -45,6 +45,7 @@ fun SettingsDrawer(
     val deviceId by settings.deviceId.collectAsState(initial = AppSettings.DEFAULT_DEVICE_ID)
     val deviceDisplayName by settings.deviceDisplayName.collectAsState(initial = AppSettings.DEFAULT_DEVICE_DISPLAY_NAME)
     val autoUpdateEnabled by settings.autoUpdateEnabled.collectAsState(initial = false)
+    val autoStartOnBoot by settings.autoStartOnBoot.collectAsState(initial = true)
 
     // Scrim + drawer
     if (visible) {
@@ -291,6 +292,30 @@ fun SettingsDrawer(
                     Switch(
                         checked = avatarEnabled,
                         onCheckedChange = { scope.launch { settings.setAvatarEnabled(it) } }
+                    )
+                }
+
+                HorizontalDivider()
+
+                // App Settings
+                Text("App", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Start on Boot", fontSize = 14.sp)
+                        Text(
+                            "Auto-launch app when tablet reboots",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = autoStartOnBoot,
+                        onCheckedChange = { scope.launch { settings.setAutoStartOnBoot(it) } }
                     )
                 }
 

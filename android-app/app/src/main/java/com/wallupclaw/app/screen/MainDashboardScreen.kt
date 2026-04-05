@@ -699,6 +699,12 @@ fun MainDashboardScreen() {
                                     remoteDisplayName = call.remoteDisplayName,
                                     roomName = call.roomName,
                                 ),
+                                onToggleMic = { enabled ->
+                                    scope.launch { callRoom?.localParticipant?.setMicrophoneEnabled(enabled) }
+                                },
+                                onToggleCamera = { enabled ->
+                                    scope.launch { callRoom?.localParticipant?.setCameraEnabled(enabled) }
+                                },
                                 onHangup = {
                                     scope.launch {
                                         intercomManager.hangup()
@@ -727,6 +733,12 @@ fun MainDashboardScreen() {
                                     remoteDisplayName = call.remoteDisplayName,
                                     roomName = call.roomName,
                                 ),
+                                onToggleMic = { enabled ->
+                                    scope.launch { callRoom?.localParticipant?.setMicrophoneEnabled(enabled) }
+                                },
+                                onToggleCamera = { enabled ->
+                                    scope.launch { callRoom?.localParticipant?.setCameraEnabled(enabled) }
+                                },
                                 onHangup = {
                                     scope.launch {
                                         intercomManager.hangup()
