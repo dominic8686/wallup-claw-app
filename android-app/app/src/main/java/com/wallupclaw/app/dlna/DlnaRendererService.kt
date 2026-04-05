@@ -64,15 +64,23 @@ class DlnaRendererService : Service() {
         val baseUrl = "http://$localIp:$HTTP_PORT"
         val descriptionUrl = "$baseUrl/description.xml"
 
-        // Start UPnP HTTP server
-        httpServer = UpnpHttpServer(HTTP_PORT).also { it.start() }
-        Log.i(TAG, "UPnP HTTP server on :$HTTP_PORT ($localIp)")
+        // Start UPnP HTTP server (gracefully handle port already in use)
+        try {
+            httpServer = UpnpHttpServer(HTTP_PORT).also { it.start() }
+            Log.i(TAG, "UPnP HTTP server on :$HTTP_PORT ($localIp)")
 
-        // Start SSDP advertisement
-        val usn = "$deviceUuid::urn:schemas-upnp-org:device:MediaRenderer:1"
-        ssdpAdvertiser = SsdpAdvertiser(usn, deviceUuid, descriptionUrl).also { it.start() }
+            // Start SSDP advertisement
+            val usn = "$deviceUuid::urn:schemas-upnp-org:device:MediaRenderer:1"
+            ssdpAdvertiser = SsdpAdvertiser(usn, deviceUuid, descriptionUrl).also { it.start() }
 
-        Log.i(TAG, "DLNA renderer started: $friendlyName ($deviceUuid) at $baseUrl")
+            Log.i(TAG, "DLNA renderer started: $friendlyName ($deviceUuid) at $baseUrl")
+        } catch (e: java.net.BindException) {
+            Log.w(TAG, "Port $HTTP_PORT already in use, DLNA renderer will retry on next start: ${e.message}")
+            httpServer = null
+        } catch (e: Exception) {
+            Log.e(TAG, "DLNA renderer start failed: ${e.message}")
+            httpServer = null
+        }
 
         return START_STICKY
     }
