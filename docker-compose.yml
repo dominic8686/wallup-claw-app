@@ -72,6 +72,7 @@ services:
       # per-tablet rooms (voice-room-{device_id}).
       - TOKEN_SERVER_URL=http://localhost:8090
       - DEVICE_POLL_INTERVAL=15
+      - INTERCOM_API_KEY=${INTERCOM_API_KEY}
 
       # OpenRouter — LLM (all modes) + STT transcription
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
@@ -106,6 +107,7 @@ services:
       - TTS_BACKEND=openai
       - TTS_VOICE=nova
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - INTERCOM_API_KEY=${INTERCOM_API_KEY}
     volumes:
       # Mount avatar static files so they are served at GET /avatar
       - ./avatar:/app/avatar:ro

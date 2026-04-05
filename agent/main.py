@@ -1151,17 +1151,23 @@ class TabletSession:
 
 TOKEN_SERVER_URL = os.environ.get("TOKEN_SERVER_URL", "http://localhost:8090")
 DEVICE_POLL_INTERVAL = int(os.environ.get("DEVICE_POLL_INTERVAL", "15"))
+INTERCOM_API_KEY = os.environ.get("INTERCOM_API_KEY", "")
 
 
 async def discover_devices() -> list[str]:
     """Fetch registered device IDs from the token server."""
     import aiohttp
+    headers = {}
+    if INTERCOM_API_KEY:
+        headers["Authorization"] = f"Bearer {INTERCOM_API_KEY}"
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(f"{TOKEN_SERVER_URL}/devices", timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            async with session.get(f"{TOKEN_SERVER_URL}/devices", headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     return [d["device_id"] for d in data.get("devices", []) if d.get("status") == "online"]
+                elif resp.status == 401:
+                    logger.warning("Device discovery: 401 Unauthorized (check INTERCOM_API_KEY)")
     except Exception as e:
         logger.warning("Device discovery failed: %s", e)
     return []
