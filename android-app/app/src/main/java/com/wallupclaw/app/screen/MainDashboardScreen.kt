@@ -265,6 +265,24 @@ fun MainDashboardScreen() {
     var remoteVideoTrack by remember { mutableStateOf<VideoTrack?>(null) }
     var localVideoTrack by remember { mutableStateOf<VideoTrack?>(null) }
 
+    // --- Clean up call room when remote side hangs up ---
+    // IntercomManager sets state to IDLE when it receives call_hangup/call_decline from remote.
+    // We need to also disconnect the LiveKit call room and restore DeviceStateManager.
+    LaunchedEffect(intercomState) {
+        if (intercomState == IntercomState.IDLE && callRoom != null) {
+            Log.i(TAG, "Remote hangup detected — cleaning up call room")
+            scope.launch {
+                deviceStateManager.transitionTo(DeviceState.IDLE)
+                callRoom?.disconnect()
+                callRoom?.release()
+                callRoom = null
+                deviceStateManager.callRoom = null
+                remoteVideoTrack = null
+                localVideoTrack = null
+            }
+        }
+    }
+
     // --- Auto-join call room when CALLING/IN_CALL and not yet connected ---
     LaunchedEffect(effectiveDeviceId, intercomManager) {
         snapshotFlow { Triple(intercomState, currentCall, callRoom) }.collect { (state, call, room) ->
