@@ -39,6 +39,13 @@ class IntercomManager(
     private val _currentCall = MutableStateFlow<CallSession?>(null)
     val currentCall: StateFlow<CallSession?> = _currentCall
 
+    /** Emits announcement messages to be spoken via TTS. */
+    private val _pendingAnnouncement = MutableStateFlow<String?>(null)
+    val pendingAnnouncement: StateFlow<String?> = _pendingAnnouncement
+
+    /** Call after TTS has spoken the announcement. */
+    fun clearAnnouncement() { _pendingAnnouncement.value = null }
+
     private var pollJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -204,6 +211,14 @@ class IntercomManager(
                 _state.value = IntercomState.IDLE
                 _currentCall.value = null
                 Log.i(TAG, "Call hung up by remote")
+            }
+
+            "announcement" -> {
+                val message = signal.optString("message", "")
+                if (message.isNotEmpty()) {
+                    Log.i(TAG, "Announcement received: ${message.take(50)}")
+                    _pendingAnnouncement.value = message
+                }
             }
         }
     }

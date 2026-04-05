@@ -81,12 +81,19 @@ class HermesIntercomCard extends HTMLElement {
       <ha-card header="Intercom">
         <div class="card-content">
           <div id="devices" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;"></div>
-          <div id="in-call-ui" style="display:none;margin-top:16px;padding:20px;background:#e8f5e9;border-radius:12px;text-align:center;">
-            <div id="call-status" style="font-size:16px;font-weight:600;margin-bottom:8px;">Calling...</div>
-            <div id="call-timer" style="font-size:24px;font-weight:700;margin-bottom:16px;font-variant-numeric:tabular-nums;">00:00</div>
-            <div style="display:flex;gap:12px;justify-content:center;">
-              <button id="mute-btn" style="padding:10px 20px;background:#FF9800;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:16px;">🎤 Mute</button>
-              <button id="hangup-btn" style="padding:10px 20px;background:#F44336;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:16px;">📵 Hang Up</button>
+          <div id="in-call-ui" style="display:none;margin-top:16px;background:#e8f5e9;border-radius:12px;overflow:hidden;">
+            <div id="video-container" style="position:relative;width:100%;background:#000;min-height:60px;">
+              <video id="remote-video" autoplay playsinline style="width:100%;max-height:400px;display:none;"></video>
+              <video id="local-video" autoplay playsinline muted style="position:absolute;bottom:8px;right:8px;width:120px;border-radius:8px;border:2px solid #fff;display:none;"></video>
+            </div>
+            <div style="padding:16px;text-align:center;">
+              <div id="call-status" style="font-size:16px;font-weight:600;margin-bottom:4px;">Calling...</div>
+              <div id="call-timer" style="font-size:24px;font-weight:700;margin-bottom:12px;font-variant-numeric:tabular-nums;">00:00</div>
+              <div style="display:flex;gap:12px;justify-content:center;">
+                <button id="mute-btn" style="padding:10px 20px;background:#FF9800;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:16px;">🎤 Mute</button>
+                <button id="cam-btn" style="padding:10px 20px;background:#2196F3;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:16px;">📷 Cam Off</button>
+                <button id="hangup-btn" style="padding:10px 20px;background:#F44336;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:16px;">📵 Hang Up</button>
+              </div>
             </div>
           </div>
           <div id="announce-bar" style="margin-top:16px;display:flex;gap:8px;">
@@ -112,6 +119,7 @@ class HermesIntercomCard extends HTMLElement {
     });
     this.querySelector("#hangup-btn").addEventListener("click", () => this._hangup());
     this.querySelector("#mute-btn").addEventListener("click", () => this._toggleMute());
+    this.querySelector("#cam-btn").addEventListener("click", () => this._toggleCamera());
 
     this.addEventListener("click", (e) => {
       const callBtn = e.target.closest("[data-call-device]");
@@ -125,6 +133,8 @@ class HermesIntercomCard extends HTMLElement {
     this._callTimerInterval = null;
     this._callStartTime = null;
     this._muted = false;
+    this._cameraOff = false;
+    this._lastCallInfo = null;
     this._startPolling();
     loadLiveKitSDK().catch(e => console.warn("LiveKit SDK preload failed:", e));
   }
@@ -264,9 +274,18 @@ class HermesIntercomCard extends HTMLElement {
           el.id = "hermes-call-audio";
           el.style.display = "none";
           this.appendChild(el);
+        } else if (track.kind === "video") {
+          const remoteVid = this.querySelector("#remote-video");
+          if (remoteVid) { track.attach(remoteVid); remoteVid.style.display = "block"; }
         }
       });
-      room.on(LK.RoomEvent.TrackUnsubscribed, (track) => { track.detach().forEach(el => el.remove()); });
+      room.on(LK.RoomEvent.TrackUnsubscribed, (track) => {
+        if (track.kind === "video") {
+          const remoteVid = this.querySelector("#remote-video");
+          if (remoteVid) { remoteVid.srcObject = null; remoteVid.style.display = "none"; }
+        }
+        track.detach().forEach(el => { if (el.id !== "remote-video" && el.id !== "local-video") el.remove(); });
+      });
       room.on(LK.RoomEvent.ParticipantConnected, (p) => { this._updateCallStatus("Connected"); });
       room.on(LK.RoomEvent.ParticipantDisconnected, (p) => {
         if (room.remoteParticipants.size === 0) this._hangup();
@@ -275,6 +294,12 @@ class HermesIntercomCard extends HTMLElement {
 
       await room.connect(this._livekitUrl, tokenData.token);
       await room.localParticipant.setMicrophoneEnabled(true);
+      try {
+        await room.localParticipant.setCameraEnabled(true);
+        const localVid = this.querySelector("#local-video");
+        const camPub = room.localParticipant.getTrackPublication("camera");
+        if (camPub?.track && localVid) { camPub.track.attach(localVid); localVid.style.display = "block"; }
+      } catch (camErr) { console.warn("Camera not available:", camErr); }
       this._room = room;
       this._showInCallUI(deviceId);
     } catch (err) {
@@ -297,19 +322,37 @@ class HermesIntercomCard extends HTMLElement {
   }
 
   _cleanupCall() {
+    // Save last call info before clearing state
+    if (this._callId && this._callStartTime) {
+      const duration = Math.floor((Date.now() - this._callStartTime) / 1000);
+      const target = this._devices.find(d => d.device_id === this._callTarget);
+      this._lastCallInfo = {
+        from: "Dashboard",
+        to: target?.display_name || this._callTarget || "?",
+        startedAt: new Date(this._callStartTime),
+        duration: `${Math.floor(duration / 60)}:${String(duration % 60).padStart(2, "0")}`,
+      };
+    }
     if (this._room) { try { this._room.disconnect(); } catch (e) {} this._room = null; }
     const audioEl = this.querySelector("#hermes-call-audio");
     if (audioEl) audioEl.remove();
+    // Reset video elements
+    const rv = this.querySelector("#remote-video"); if (rv) { rv.srcObject = null; rv.style.display = "none"; }
+    const lv = this.querySelector("#local-video"); if (lv) { lv.srcObject = null; lv.style.display = "none"; }
     this._callId = null;
     this._callTarget = null;
     this._muted = false;
+    this._cameraOff = false;
     if (this._callTimerInterval) { clearInterval(this._callTimerInterval); this._callTimerInterval = null; }
     this._callStartTime = null;
     const ui = this.querySelector("#in-call-ui");
     if (ui) ui.style.display = "none";
     const muteBtn = this.querySelector("#mute-btn");
     if (muteBtn) { muteBtn.textContent = "🎤 Mute"; muteBtn.style.background = "#FF9800"; }
+    const camBtn = this.querySelector("#cam-btn");
+    if (camBtn) { camBtn.textContent = "📷 Cam Off"; camBtn.style.background = "#2196F3"; }
     this._renderDevices();
+    this._renderLastCall();
   }
 
   _showInCallUI(deviceId) {
@@ -340,20 +383,49 @@ class HermesIntercomCard extends HTMLElement {
     if (btn) { btn.textContent = this._muted ? "🔇 Unmute" : "🎤 Mute"; btn.style.background = this._muted ? "#666" : "#FF9800"; }
   }
 
+  _toggleCamera() {
+    if (!this._room) return;
+    this._cameraOff = !this._cameraOff;
+    this._room.localParticipant.setCameraEnabled(!this._cameraOff);
+    const btn = this.querySelector("#cam-btn");
+    if (btn) { btn.textContent = this._cameraOff ? "📷 Cam On" : "📷 Cam Off"; btn.style.background = this._cameraOff ? "#666" : "#2196F3"; }
+    const lv = this.querySelector("#local-video");
+    if (lv) lv.style.display = this._cameraOff ? "none" : "block";
+  }
+
+  _renderLastCall() {
+    const logDiv = this.querySelector("#call-log");
+    if (!logDiv) return;
+    const info = this._lastCallInfo;
+    if (info) {
+      logDiv.innerHTML = `
+        <div style="font-size:12px;color:#888;margin-bottom:4px;">Last Call</div>
+        <div style="background:#f5f5f5;border-radius:8px;padding:10px;font-size:13px;">
+          📞 ${info.from} → ${info.to} · ${info.duration} · ${info.startedAt.toLocaleTimeString()}
+        </div>
+      `;
+    }
+  }
+
   async _sendAnnounce() {
     const input = this.querySelector("#announce-input");
     const message = input.value.trim();
-    if (!message || !this._hass) return;
+    if (!message) return;
 
-    await this._hass.callService("hermes_intercom", "broadcast", {
-      message: message,
-      targets: "all",
-    });
+    // Send announcement directly to each online device via token server
+    const onlineDevices = this._devices.filter(d => d.status === "online");
+    for (const d of onlineDevices) {
+      await this._apiFetch("/signal", {
+        method: "POST",
+        body: JSON.stringify({ type: "announcement", from: "ha-dashboard", to: d.device_id, message }),
+      });
+    }
     input.value = "";
   }
 
   _update() {
-    // Update call log from last_call sensor
+    // Only update last call from HA sensor if we don't have a local one
+    if (this._lastCallInfo) return;
     const lastCallEntity = Object.keys(this._hass.states).find(
       e => e.startsWith("sensor.hermes_intercom_last_call")
     );

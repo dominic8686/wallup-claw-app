@@ -102,17 +102,33 @@ fun MainDashboardScreen() {
     // --- Audio/LiveKit ---
     val audioPipeline = remember { AudioPipelineManager() }
     val wakeWordManager = remember { WakeWordManager(context) }
-    val room = remember { LiveKit.create(context) }
+    val room = remember {
+        LiveKit.create(context).apply {
+            // Camera: 720p @ 15fps for security cam + vision AI
+            videoTrackCaptureDefaults = io.livekit.android.room.track.LocalVideoTrackOptions(
+                captureParams = io.livekit.android.room.track.VideoCaptureParameter(
+                    width = 1280,
+                    height = 720,
+                    maxFps = 15,
+                ),
+            )
+        }
+    }
     var roomConnected by remember { mutableStateOf(false) }
 
     // --- Central resource coordinator ---
+    val securityCameraEnabled by appSettings.securityCameraEnabled.collectAsState(initial = true)
     val deviceStateManager = remember(audioPipeline, room) {
         DeviceStateManager(
             context = context,
             audioPipeline = audioPipeline,
             voiceRoom = room,
-            securityCameraEnabled = false, // Will be configurable in settings
+            securityCameraEnabled = true,
         )
+    }
+    // Keep DeviceStateManager in sync with the setting
+    LaunchedEffect(securityCameraEnabled) {
+        deviceStateManager.setSecurityCameraEnabled(securityCameraEnabled)
     }
     val deviceState by deviceStateManager.state.collectAsState()
 
@@ -349,6 +365,27 @@ fun MainDashboardScreen() {
         if (effectiveDeviceId == "tablet-pending") return@LaunchedEffect
         intercomManager.start()
         Log.i(TAG, "IntercomManager signal polling started")
+    }
+
+    // --- TTS announcements from intercom ---
+    val tts = remember {
+        android.speech.tts.TextToSpeech(context) { status ->
+            if (status == android.speech.tts.TextToSpeech.SUCCESS) {
+                Log.i(TAG, "TTS engine ready")
+            } else {
+                Log.e(TAG, "TTS init failed: $status")
+            }
+        }
+    }
+    val pendingAnnouncement by intercomManager.pendingAnnouncement.collectAsState()
+    LaunchedEffect(pendingAnnouncement) {
+        val message = pendingAnnouncement ?: return@LaunchedEffect
+        Log.i(TAG, "Speaking announcement: ${message.take(50)}")
+        tts.speak(message, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "announcement")
+        intercomManager.clearAnnouncement()
+    }
+    DisposableEffect(tts) {
+        onDispose { tts.shutdown() }
     }
 
     // --- Background heartbeat every 15s + config polling ---

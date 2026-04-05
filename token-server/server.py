@@ -679,11 +679,10 @@ app.router.add_get("/calls", handle_calls)
 app.router.add_post("/configure", handle_configure)
 app.router.add_get("/configure", handle_configure)
 
-# CORS preflight
-app.router.add_route("OPTIONS", "/register", handle_options)
-app.router.add_route("OPTIONS", "/heartbeat", handle_options)
-app.router.add_route("OPTIONS", "/signal", handle_options)
-app.router.add_route("OPTIONS", "/configure", handle_options)
+# CORS preflight for all endpoints
+for cors_path in ["/register", "/heartbeat", "/signal", "/configure",
+                  "/devices", "/calls", "/token", "/signals"]:
+    app.router.add_route("OPTIONS", cors_path, handle_options)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8090))
