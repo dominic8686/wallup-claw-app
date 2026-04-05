@@ -210,6 +210,23 @@ adb install -r android-app\app\build\outputs\apk\debug\app-debug.apk
 
 ## Configuration
 
+### Agent Mode
+Set in `docker-compose.yml` under `voice-agent.environment`:
+
+`AGENT_MODE=hermes` (default)
+Full Hermes AIAgent — tools, memory, Home Assistant integration, MCP servers. Model managed by Hermes' own config in `~/.hermes/config.yaml`.
+
+`AGENT_MODE=openrouter`
+Lightweight direct OpenRouter call — no tools, no memory. Uses `OPENROUTER_API_KEY` from the mounted `~/.hermes/.env`. Model selected via `AGENT_MODEL`.
+
+`AGENT_MODEL=openai/gpt-4o-mini` (openrouter mode only)
+Any OpenRouter-supported model string. Examples:
+- `google/gemini-2.0-flash`
+- `anthropic/claude-3-haiku`
+- `openai/gpt-4o`
+
+Switching modes requires only a compose file edit — no code changes, no rebuild.
+
 ### Android App Settings
 Open the app → swipe left or tap ⚙ → Settings:
 - **Device Identity**: Set a unique ID (e.g., `kitchen`), display name, room

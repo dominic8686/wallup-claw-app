@@ -1,12 +1,11 @@
-"""LiveKit Voice Agent with Hermes as the AI orchestrator.
+"""LiveKit Voice Agent — selectable AI backend.
 
-Architecture mirrors Hermes' Discord voice implementation:
-- LiveKit handles WebRTC audio transport (like discord.py handles Discord audio)
-- Silero VAD detects speech boundaries
-- OpenAI Whisper transcribes speech to text
-- Hermes AIAgent processes text (tools, memory, skills)
-- OpenAI TTS converts response to speech
-- Audio published back to LiveKit room
+Controlled by AGENT_MODE environment variable:
+  hermes      (default) Full Hermes AIAgent with tools, memory, HA integration, MCP.
+  openrouter  Lightweight direct OpenRouter call. Model set via AGENT_MODEL env var.
+
+Audio pipeline (both modes):
+  LiveKit WebRTC -> Silero VAD -> OpenAI Whisper STT -> backend -> OpenAI TTS -> LiveKit
 """
 
 import asyncio
@@ -21,13 +20,24 @@ import numpy as np
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger("hermes-livekit")
 
-# Load Hermes .env file so HASS_TOKEN, HASS_URL etc. are available
+# Load Hermes config (.env with all API keys) from the mounted ~/.hermes volume.
+# load_dotenv only sets vars that are not already in the environment.
 try:
     from dotenv import load_dotenv
     load_dotenv(os.path.expanduser("~/.hermes/.env"))
     logger.info("Loaded ~/.hermes/.env")
 except Exception:
     pass
+
+# ---------------------------------------------------------------------------
+# Agent mode — read once at startup, fail fast on bad values
+# ---------------------------------------------------------------------------
+
+AGENT_MODE = os.environ.get("AGENT_MODE", "hermes").strip().lower()
+if AGENT_MODE not in ("hermes", "openrouter"):
+    raise SystemExit(f"Invalid AGENT_MODE={AGENT_MODE!r}. Must be 'hermes' or 'openrouter'.")
+
+logger.info("Agent mode: %s", AGENT_MODE)
 
 from livekit import rtc, api
 import json as _json
@@ -37,13 +47,14 @@ import json as _json
 # ---------------------------------------------------------------------------
 
 _room_ref = None  # Set after room.connect()
+_agent_label = "🤖 Hermes" if AGENT_MODE == "hermes" else "🤖 Assistant"
 
 async def relay_transcript(role: str, text: str):
     """Send transcript as a chat message visible in LiveKit's built-in chat UI."""
     if _room_ref is None:
         return
     try:
-        prefix = "🎤 You: " if role == "user" else "🤖 Hermes: "
+        prefix = "🎤 You: " if role == "user" else f"{_agent_label}: "
         msg = _json.dumps({
             "type": "chat_message",
             "message": prefix + text,
@@ -57,19 +68,6 @@ async def relay_transcript(role: str, text: str):
         logger.debug("Relayed chat: %s: %s", role, text[:50])
     except Exception as e:
         logger.debug("Chat relay failed: %s", e)
-
-# ---------------------------------------------------------------------------
-# Hermes AIAgent (the brain)
-# ---------------------------------------------------------------------------
-
-HERMES_AVAILABLE = False
-try:
-    sys.path.insert(0, "/opt/hermes")
-    from run_agent import AIAgent
-    HERMES_AVAILABLE = True
-    logger.info("Hermes AIAgent loaded")
-except ImportError as e:
-    logger.warning("Hermes not available, using OpenAI fallback: %s", e)
 
 # ---------------------------------------------------------------------------
 # STT helper
@@ -116,55 +114,90 @@ async def text_to_speech(text: str, output_path: str) -> bool:
         client.close()
 
 # ---------------------------------------------------------------------------
-# Hermes chat wrapper
+# Chat backends
 # ---------------------------------------------------------------------------
 
-class HermesChat:
-    """Wraps Hermes AIAgent for multi-turn voice conversation."""
+class HermesBackend:
+    """Full Hermes AIAgent — tools, memory, HA, MCP servers."""
 
     def __init__(self):
-        if HERMES_AVAILABLE:
-            self._agent = AIAgent(
-                model=os.environ.get("HERMES_MODEL", "gpt-4o-mini"),
-                quiet_mode=True,
-                enabled_toolsets=["web", "homeassistant", "memory", "terminal"],
-            )
-            self._history = []
-            logger.info("HermesChat initialized with AIAgent")
-        else:
-            self._agent = None
-            self._history = []
-            logger.info("HermesChat initialized with OpenAI fallback")
+        sys.path.insert(0, "/opt/hermes")
+        try:
+            from run_agent import AIAgent
+        except ImportError as e:
+            raise SystemExit(
+                f"AGENT_MODE=hermes but Hermes failed to import: {e}\n"
+                "Check that /opt/hermes is mounted and all dependencies are installed."
+            ) from e
+        self._agent = AIAgent(
+            model=os.environ.get("HERMES_MODEL", "gpt-4o-mini"),
+            quiet_mode=True,
+            enabled_toolsets=["web", "homeassistant", "memory", "terminal"],
+        )
+        self._history = []
+        logger.info("HermesBackend ready (model=%s)", os.environ.get("HERMES_MODEL", "gpt-4o-mini"))
 
     async def chat(self, user_message: str) -> str:
-        """Send a message and get a response."""
-        if self._agent:
-            # Use Hermes AIAgent (has tools, memory, skills)
-            result = await asyncio.to_thread(
-                self._agent.run_conversation,
-                user_message=user_message,
-                conversation_history=self._history,
+        result = await asyncio.to_thread(
+            self._agent.run_conversation,
+            user_message=user_message,
+            conversation_history=self._history,
+        )
+        self._history = result.get("messages", [])
+        return result.get("final_response", "I'm not sure how to respond.")
+
+
+class OpenRouterBackend:
+    """Lightweight direct OpenRouter call — no tools, no memory.
+
+    Model is selected via AGENT_MODEL env var (default: openai/gpt-4o-mini).
+    Uses OPENROUTER_API_KEY from the mounted ~/.hermes/.env.
+    """
+
+    SYSTEM_PROMPT = (
+        "You are a helpful voice assistant. "
+        "Keep responses concise — 1 to 3 sentences. "
+        "You are running in lightweight mode without tools or memory."
+    )
+
+    def __init__(self):
+        from openai import OpenAI
+        api_key = os.environ.get("OPENROUTER_API_KEY")
+        if not api_key:
+            raise SystemExit(
+                "AGENT_MODE=openrouter but OPENROUTER_API_KEY is not set.\n"
+                "Ensure ~/.hermes/.env is mounted and contains OPENROUTER_API_KEY."
             )
-            self._history = result.get("messages", [])
-            return result.get("final_response", "I'm not sure how to respond.")
-        else:
-            # Fallback: direct OpenAI call
-            from openai import OpenAI
-            client = OpenAI()
-            try:
-                self._history.append({"role": "user", "content": user_message})
-                resp = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "You are Hermes, a helpful voice assistant. Keep responses to 1-2 sentences."},
-                        *self._history[-20:],  # Last 20 messages
-                    ],
-                )
-                reply = resp.choices[0].message.content
-                self._history.append({"role": "assistant", "content": reply})
-                return reply
-            finally:
-                client.close()
+        self._model = os.environ.get("AGENT_MODEL", "openai/gpt-4o-mini")
+        self._client = OpenAI(
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1",
+        )
+        self._history = []
+        logger.info("OpenRouterBackend ready (model=%s)", self._model)
+
+    async def chat(self, user_message: str) -> str:
+        self._history.append({"role": "user", "content": user_message})
+        resp = await asyncio.to_thread(
+            self._client.chat.completions.create,
+            model=self._model,
+            messages=[
+                {"role": "system", "content": self.SYSTEM_PROMPT},
+                *self._history[-20:],
+            ],
+        )
+        reply = resp.choices[0].message.content
+        self._history.append({"role": "assistant", "content": reply})
+        return reply
+
+
+def create_backend():
+    """Instantiate the backend selected by AGENT_MODE. Fails hard on misconfiguration."""
+    if AGENT_MODE == "hermes":
+        return HermesBackend()
+    if AGENT_MODE == "openrouter":
+        return OpenRouterBackend()
+    # unreachable — guarded at module load above
 
 # ---------------------------------------------------------------------------
 # VAD (Voice Activity Detection) using Silero
@@ -446,7 +479,7 @@ async def main():
 
     # Connect to room
     room = rtc.Room()
-    hermes = HermesChat()
+    backend = create_backend()
     vad = SimpleVAD()
     processing = False  # Prevent overlapping processing
     agent_active = False  # IDLE by default, ACTIVE when wake word detected
@@ -469,7 +502,7 @@ async def main():
         try:
             logger.info("Agent ACTIVE - starting conversation")
             await relay_transcript("system", "🌟 Conversation started")
-            greeting = await hermes.chat("The user just said the wake word Hey Jarvis. Greet them warmly and briefly.")
+            greeting = await backend.chat("The user just said the wake word Hey Jarvis. Greet them warmly and briefly.")
             logger.info("Greeting: %s", greeting)
             await speak(greeting)
         finally:
@@ -583,11 +616,11 @@ async def main():
                     utterance = vad.process(pcm_16k)
                     if utterance:
                         processing = True
-                        asyncio.ensure_future(handle_utterance(utterance, hermes))
+                        asyncio.ensure_future(handle_utterance(utterance, backend))
 
             asyncio.ensure_future(process_audio())
 
-    async def handle_utterance(pcm_data: bytes, hermes: HermesChat):
+    async def handle_utterance(pcm_data: bytes, backend):
         nonlocal processing
         try:
             # PCM -> WAV -> STT
@@ -607,9 +640,9 @@ async def main():
             logger.info("User said: %s", transcript)
             await relay_transcript("user", transcript)
 
-            # Hermes processes the transcript
-            response = await hermes.chat(transcript)
-            logger.info("Hermes response: %s", response[:100])
+            # Backend processes the transcript
+            response = await backend.chat(transcript)
+            logger.info("Response: %s", response[:100])
             await relay_transcript("assistant", response)
 
             # TTS and play back

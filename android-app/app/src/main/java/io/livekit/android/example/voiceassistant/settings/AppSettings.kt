@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -35,6 +36,17 @@ val BUNDLED_MODELS = listOf(
     WakeWordModelInfo("hey_mycroft", "Hey Mycroft", "wakeword_models/hey_mycroft_v0.1.onnx"),
 )
 
+enum class UpdateInterval(val id: String, val displayName: String, val millis: Long) {
+    HOURLY("hourly", "Every hour", 3_600_000L),
+    EVERY_6H("every_6h", "Every 6 hours", 21_600_000L),
+    DAILY("daily", "Every day", 86_400_000L),
+    WEEKLY("weekly", "Every week", 604_800_000L);
+
+    companion object {
+        fun fromId(id: String) = entries.find { it.id == id } ?: DAILY
+    }
+}
+
 class AppSettings(private val context: Context) {
 
     companion object {
@@ -52,6 +64,8 @@ class AppSettings(private val context: Context) {
         private val DEVICE_DISPLAY_NAME_KEY = stringPreferencesKey("device_display_name")
         private val DEVICE_ROOM_LOCATION_KEY = stringPreferencesKey("device_room_location")
         private val AUTO_UPDATE_KEY = booleanPreferencesKey("auto_update_enabled")
+        private val UPDATE_INTERVAL_KEY = stringPreferencesKey("update_check_interval")
+        private val LAST_UPDATE_CHECK_KEY = longPreferencesKey("last_update_check")
 
         const val DEFAULT_HA_URL = "http://homeassistant.local:8123"
         const val DEFAULT_LIVEKIT_URL = "ws://192.168.211.153:7880"
@@ -119,6 +133,14 @@ class AppSettings(private val context: Context) {
         prefs[AUTO_UPDATE_KEY] ?: false
     }
 
+    val updateCheckInterval: Flow<String> = context.dataStore.data.map { prefs ->
+        prefs[UPDATE_INTERVAL_KEY] ?: UpdateInterval.DAILY.id
+    }
+
+    val lastUpdateCheck: Flow<Long> = context.dataStore.data.map { prefs ->
+        prefs[LAST_UPDATE_CHECK_KEY] ?: 0L
+    }
+
     suspend fun setCallMode(mode: CallMode) {
         context.dataStore.edit { it[CALL_MODE_KEY] = mode.value }
     }
@@ -173,5 +195,13 @@ class AppSettings(private val context: Context) {
 
     suspend fun setAutoUpdateEnabled(enabled: Boolean) {
         context.dataStore.edit { it[AUTO_UPDATE_KEY] = enabled }
+    }
+
+    suspend fun setUpdateCheckInterval(intervalId: String) {
+        context.dataStore.edit { it[UPDATE_INTERVAL_KEY] = intervalId }
+    }
+
+    suspend fun setLastUpdateCheck(timestamp: Long) {
+        context.dataStore.edit { it[LAST_UPDATE_CHECK_KEY] = timestamp }
     }
 }

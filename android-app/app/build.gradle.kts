@@ -1,8 +1,16 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.androidApplication)
     alias(libs.plugins.jetbrainsKotlinAndroid)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.kotlin.compose)
+}
+
+val localProps = Properties()
+val localPropsFile = rootProject.file("local.properties")
+if (localPropsFile.exists()) {
+    localProps.load(localPropsFile.inputStream())
 }
 
 android {
@@ -13,13 +21,19 @@ android {
         applicationId = "io.livekit.android.example.voiceassistant"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
         }
+
+        buildConfigField(
+            "String",
+            "GITHUB_RELEASES_TOKEN",
+            "\"${localProps.getProperty("GITHUB_RELEASES_TOKEN", "")}\""
+        )
     }
 
     buildTypes {

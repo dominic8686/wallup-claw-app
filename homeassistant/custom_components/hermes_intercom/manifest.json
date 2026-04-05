@@ -1,0 +1,17 @@
+{
+  "domain": "hermes_intercom",
+  "name": "Hermes Intercom",
+  "codeowners": ["@NousResearch"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/NousResearch/hermes-agent",
+  "integration_type": "hub",
+  "iot_class": "local_polling",
+  "requirements": ["aiohttp>=3.9"],
+  "version": "0.2.0",
+  "zeroconf": [
+    {
+      "type": "_hermes-intercom._tcp.local."
+    }
+  ]
+}

@@ -24,6 +24,13 @@
 
 -dontobfuscate
 
+# ONNX Runtime — keep all JNI-referenced classes
+-keep class ai.onnxruntime.** { *; }
+-keepclassmembers class ai.onnxruntime.** { *; }
+
+# Gson — keep classes used for JSON deserialization
+-keep class com.google.gson.** { *; }
+
 -keepclassmembers class io.livekit.android.** {
     *** Companion;
 }

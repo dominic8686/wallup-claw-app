@@ -12,21 +12,34 @@ services:
     restart: unless-stopped
 
   voice-agent:
-    build: ./agent
+    build:
+      context: ./agent
+      # Injects /opt/hermes into the build so the Dockerfile can COPY --from=hermes.
+      # Hermes code + all deps are baked into the image at build time.
+      additional_contexts:
+        hermes: /opt/hermes
     network_mode: host
     environment:
+      # LiveKit connection — specific to this project, not in ~/.hermes/.env
       - LIVEKIT_URL=ws://localhost:7880
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      - HASS_URL=${HASS_URL}
-      - HASS_TOKEN=${HASS_TOKEN}
+
+      # --- Agent mode ---
+      # AGENT_MODE=hermes      Full Hermes AIAgent: tools, memory, HA, MCP (default)
+      # AGENT_MODE=openrouter  Lightweight direct OpenRouter call, no tools
+      - AGENT_MODE=hermes
+
+      # AGENT_MODEL selects the LLM in openrouter mode only.
+      # Ignored in hermes mode (Hermes manages its own model config).
+      # Examples: openai/gpt-4o-mini  google/gemini-2.0-flash  anthropic/claude-3-haiku
+      - AGENT_MODEL=openai/gpt-4o-mini
+
+      # All other API keys (OpenRouter, OpenAI, HASS, Browserbase, Firecrawl, etc.)
+      # are loaded by agent.py via load_dotenv('/root/.hermes/.env') from the mount below.
     volumes:
-      # Hermes AI brain — cloned at /opt/hermes on the LXC host
-      - /opt/hermes:/opt/hermes:ro
-      # Hermes config + .env (API keys, HA token, etc.)
-      - /root/.hermes:/root/.hermes:ro
+      # Hermes runtime data: .env (all API keys), config.yaml, memories, skills, sessions
+      - /root/.hermes:/root/.hermes
     depends_on:
       - livekit-server
     restart: unless-stopped

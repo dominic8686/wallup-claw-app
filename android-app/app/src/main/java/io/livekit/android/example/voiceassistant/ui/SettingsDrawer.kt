@@ -19,6 +19,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.livekit.android.example.voiceassistant.BuildConfig
 import io.livekit.android.example.voiceassistant.settings.*
 import kotlinx.coroutines.launch
 
@@ -45,6 +46,7 @@ fun SettingsDrawer(
     val deviceId by settings.deviceId.collectAsState(initial = AppSettings.DEFAULT_DEVICE_ID)
     val deviceDisplayName by settings.deviceDisplayName.collectAsState(initial = AppSettings.DEFAULT_DEVICE_DISPLAY_NAME)
     val deviceRoomLocation by settings.deviceRoomLocation.collectAsState(initial = AppSettings.DEFAULT_DEVICE_ROOM_LOCATION)
+    val autoUpdateEnabled by settings.autoUpdateEnabled.collectAsState(initial = false)
 
     // Scrim + drawer
     if (visible) {
@@ -328,6 +330,121 @@ fun SettingsDrawer(
                                 }) { Text("Save") }
                             }
                         }
+                    )
+                }
+
+                HorizontalDivider()
+
+                // App Updates
+                Text("App Updates", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Text(
+                    "Version ${BuildConfig.VERSION_NAME}",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                var updateStatus by remember { mutableStateOf("") }
+                var isChecking by remember { mutableStateOf(false) }
+                var pendingApkUrl by remember { mutableStateOf<String?>(null) }
+                var isDownloading by remember { mutableStateOf(false) }
+                val context = androidx.compose.ui.platform.LocalContext.current
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Auto-Update", fontSize = 14.sp, modifier = Modifier.weight(1f))
+                    Switch(
+                        checked = autoUpdateEnabled,
+                        onCheckedChange = { scope.launch { settings.setAutoUpdateEnabled(it) } }
+                    )
+                }
+
+                if (autoUpdateEnabled) {
+                    val updateInterval by settings.updateCheckInterval.collectAsState(initial = UpdateInterval.DAILY.id)
+                    val currentInterval = UpdateInterval.fromId(updateInterval)
+                    var intervalExpanded by remember { mutableStateOf(false) }
+
+                    ExposedDropdownMenuBox(
+                        expanded = intervalExpanded,
+                        onExpandedChange = { intervalExpanded = !intervalExpanded }
+                    ) {
+                        OutlinedTextField(
+                            value = currentInterval.displayName,
+                            onValueChange = {},
+                            readOnly = true,
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = intervalExpanded) },
+                            modifier = Modifier.menuAnchor().fillMaxWidth(),
+                            label = { Text("Check frequency") }
+                        )
+                        ExposedDropdownMenu(
+                            expanded = intervalExpanded,
+                            onDismissRequest = { intervalExpanded = false }
+                        ) {
+                            UpdateInterval.entries.forEach { interval ->
+                                DropdownMenuItem(
+                                    text = { Text(interval.displayName) },
+                                    onClick = {
+                                        scope.launch { settings.setUpdateCheckInterval(interval.id) }
+                                        intervalExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Button(
+                    onClick = {
+                        isChecking = true
+                        updateStatus = "Checking..."
+                        pendingApkUrl = null
+                        scope.launch {
+                            val info = AppUpdater.checkForUpdate(BuildConfig.VERSION_NAME)
+                            isChecking = false
+                            if (info == null) {
+                                updateStatus = "Could not check for updates."
+                            } else if (info.isNewer) {
+                                updateStatus = "Update available: v${info.latestVersion}"
+                                pendingApkUrl = info.apkDownloadUrl
+                            } else {
+                                updateStatus = "You're on the latest version."
+                            }
+                        }
+                    },
+                    enabled = !isChecking && !isDownloading,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (isChecking) "Checking..." else "Check for Update")
+                }
+
+                if (pendingApkUrl != null) {
+                    Button(
+                        onClick = {
+                            isDownloading = true
+                            updateStatus = "Downloading..."
+                            scope.launch {
+                                val success = AppUpdater.downloadAndInstall(context, pendingApkUrl!!)
+                                isDownloading = false
+                                if (!success) {
+                                    updateStatus = "Download failed. Try again."
+                                }
+                            }
+                        },
+                        enabled = !isDownloading,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (isDownloading) "Downloading..." else "Download & Install")
+                    }
+                }
+
+                if (updateStatus.isNotEmpty()) {
+                    Text(
+                        updateStatus,
+                        fontSize = 13.sp,
+                        color = if (pendingApkUrl != null) Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }

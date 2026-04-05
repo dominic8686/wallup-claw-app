@@ -1,0 +1,28 @@
+blueprint:
+  name: "Missed Call → Phone Notification"
+  description: >
+    When an intercom call is missed (no tablet answers), send a push notification
+    to your phone via the HA companion app.
+  domain: automation
+  input:
+    notify_service:
+      name: Notification Service
+      description: "The notify service to use (e.g., notify.mobile_app_my_phone)."
+      selector:
+        text:
+      default: "notify.mobile_app"
+
+trigger:
+  - platform: event
+    event_type: hermes_intercom_call_missed
+
+action:
+  - service: !input notify_service
+    data:
+      title: "Missed Intercom Call"
+      message: >
+        Call from {{ trigger.event.data.from }} to {{ trigger.event.data.to }}
+        was not answered.
+      data:
+        tag: "intercom_missed"
+        importance: high

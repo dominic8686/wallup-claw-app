@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import androidx.core.content.FileProvider
+import io.livekit.android.example.voiceassistant.BuildConfig
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -31,10 +32,13 @@ object AppUpdater {
      */
     suspend fun checkForUpdate(currentVersion: String): UpdateInfo? = withContext(Dispatchers.IO) {
         try {
-            val request = Request.Builder()
+            val requestBuilder = Request.Builder()
                 .url(RELEASES_URL)
                 .header("Accept", "application/vnd.github+json")
-                .build()
+            if (BuildConfig.GITHUB_RELEASES_TOKEN.isNotEmpty()) {
+                requestBuilder.header("Authorization", "Bearer ${BuildConfig.GITHUB_RELEASES_TOKEN}")
+            }
+            val request = requestBuilder.build()
 
             val response = client.newCall(request).execute()
             if (!response.isSuccessful) {
