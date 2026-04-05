@@ -38,7 +38,7 @@ fun ContactsPanel(
     tokenServerUrl: String,
     myDeviceId: String,
     client: TokenServerClient,
-    onCallDevice: (String) -> Unit,
+    onCallDevice: (deviceId: String, displayName: String) -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -121,7 +121,7 @@ fun ContactsPanel(
                 otherDevices.forEach { device ->
                     DeviceRow(
                         device = device,
-                        onCall = { onCallDevice(device.deviceId) }
+                        onCall = { onCallDevice(device.deviceId, device.displayName) }
                     )
                 }
             }

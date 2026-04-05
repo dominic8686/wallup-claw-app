@@ -750,11 +750,11 @@ fun MainDashboardScreen() {
                                 tokenServerUrl = tokenServerUrl,
                                 myDeviceId = effectiveDeviceId,
                                 client = tokenServerClient,
-                                onCallDevice = { targetId ->
+                                onCallDevice = { targetId, targetName ->
                                     scope.launch {
-                                        val result = intercomManager.callDevice(targetId)
+                                        val result = intercomManager.callDevice(targetId, targetName)
                                         if (result.isSuccess) {
-                                            Log.i(TAG, "Call initiated to $targetId")
+                                            Log.i(TAG, "Call initiated to $targetName ($targetId)")
                                             // LaunchedEffect will handle room joining when state changes to CALLING
                                         } else {
                                             Log.e(TAG, "Call to $targetId failed")

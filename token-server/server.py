@@ -344,6 +344,9 @@ async def handle_signal(request: web.Request) -> web.Response:
         }
         body["call_id"] = call_id
         body["room_name"] = room_name
+        # Inject caller's display name so the receiving tablet can show it
+        if from_device in device_registry:
+            body["from_display_name"] = device_registry[from_device].get("display_name", from_device)
 
         # Update device call states
         if from_device in device_registry:

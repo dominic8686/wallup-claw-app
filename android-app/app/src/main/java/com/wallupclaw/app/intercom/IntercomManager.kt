@@ -77,7 +77,7 @@ class IntercomManager(
     }
 
     /** Initiate a call to another device. */
-    suspend fun callDevice(targetDeviceId: String): Result<CallSession> {
+    suspend fun callDevice(targetDeviceId: String, targetDisplayName: String = targetDeviceId): Result<CallSession> {
         return withContext(Dispatchers.IO) {
             try {
                 val body = JSONObject().apply {
@@ -92,7 +92,7 @@ class IntercomManager(
                 val session = CallSession(
                     callId = callId,
                     remoteDeviceId = targetDeviceId,
-                    remoteDisplayName = targetDeviceId, // Will be enriched later
+                    remoteDisplayName = targetDisplayName,
                     roomName = roomName,
                     isOutgoing = true,
                 )
