@@ -1,6 +1,8 @@
 package io.livekit.android.example.voiceassistant.screen
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.graphics.Color
@@ -18,6 +20,7 @@ import kotlinx.serialization.Serializable
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import io.livekit.android.example.voiceassistant.BuildConfig
 
 @Serializable
 object SettingsRoute
@@ -35,6 +38,7 @@ fun SettingsScreen(onBack: () -> Unit) {
     val deviceId by settings.deviceId.collectAsState(initial = AppSettings.DEFAULT_DEVICE_ID)
     val deviceDisplayName by settings.deviceDisplayName.collectAsState(initial = AppSettings.DEFAULT_DEVICE_DISPLAY_NAME)
     val deviceRoomLocation by settings.deviceRoomLocation.collectAsState(initial = AppSettings.DEFAULT_DEVICE_ROOM_LOCATION)
+    val autoUpdateEnabled by settings.autoUpdateEnabled.collectAsState(initial = false)
 
     Scaffold(
         topBar = {
@@ -52,6 +56,7 @@ fun SettingsScreen(onBack: () -> Unit) {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 24.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(24.dp)
         ) {
@@ -345,6 +350,98 @@ fun SettingsScreen(onBack: () -> Unit) {
                 ) {
                     Text(if (isTesting) "STOP TEST" else "START TEST")
                 }
+            }
+
+            HorizontalDivider()
+
+            // --- App Updates ---
+            Text("App Updates", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            Text(
+                "Current version: ${BuildConfig.VERSION_NAME}",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            var updateStatus by remember { mutableStateOf("") }
+            var isChecking by remember { mutableStateOf(false) }
+            var pendingApkUrl by remember { mutableStateOf<String?>(null) }
+            var isDownloading by remember { mutableStateOf(false) }
+
+            // Auto-Update toggle
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text("Auto-Update", fontWeight = FontWeight.Medium)
+                    Text(
+                        "Automatically check for updates on app start",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = autoUpdateEnabled,
+                    onCheckedChange = { scope.launch { settings.setAutoUpdateEnabled(it) } }
+                )
+            }
+
+            // Check for Update button
+            Button(
+                onClick = {
+                    isChecking = true
+                    updateStatus = "Checking..."
+                    pendingApkUrl = null
+                    scope.launch {
+                        val info = AppUpdater.checkForUpdate(BuildConfig.VERSION_NAME)
+                        isChecking = false
+                        if (info == null) {
+                            updateStatus = "Could not check for updates."
+                        } else if (info.isNewer) {
+                            updateStatus = "Update available: v${info.latestVersion}"
+                            pendingApkUrl = info.apkDownloadUrl
+                        } else {
+                            updateStatus = "You're on the latest version."
+                        }
+                    }
+                },
+                enabled = !isChecking && !isDownloading,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (isChecking) "Checking..." else "Check for Update")
+            }
+
+            // Download & Install button (shown when update is available)
+            if (pendingApkUrl != null) {
+                Button(
+                    onClick = {
+                        isDownloading = true
+                        updateStatus = "Downloading..."
+                        scope.launch {
+                            val success = AppUpdater.downloadAndInstall(context, pendingApkUrl!!)
+                            isDownloading = false
+                            if (!success) {
+                                updateStatus = "Download failed. Try again."
+                            }
+                        }
+                    },
+                    enabled = !isDownloading,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF4CAF50)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (isDownloading) "Downloading..." else "Download & Install Update")
+                }
+            }
+
+            if (updateStatus.isNotEmpty()) {
+                Text(
+                    updateStatus,
+                    fontSize = 14.sp,
+                    color = if (pendingApkUrl != null) Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }

@@ -51,6 +51,7 @@ class AppSettings(private val context: Context) {
         private val DEVICE_ID_KEY = stringPreferencesKey("device_id")
         private val DEVICE_DISPLAY_NAME_KEY = stringPreferencesKey("device_display_name")
         private val DEVICE_ROOM_LOCATION_KEY = stringPreferencesKey("device_room_location")
+        private val AUTO_UPDATE_KEY = booleanPreferencesKey("auto_update_enabled")
 
         const val DEFAULT_HA_URL = "http://homeassistant.local:8123"
         const val DEFAULT_LIVEKIT_URL = "ws://192.168.211.153:7880"
@@ -114,6 +115,10 @@ class AppSettings(private val context: Context) {
         prefs[DEVICE_ROOM_LOCATION_KEY] ?: DEFAULT_DEVICE_ROOM_LOCATION
     }
 
+    val autoUpdateEnabled: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[AUTO_UPDATE_KEY] ?: false
+    }
+
     suspend fun setCallMode(mode: CallMode) {
         context.dataStore.edit { it[CALL_MODE_KEY] = mode.value }
     }
@@ -164,5 +169,9 @@ class AppSettings(private val context: Context) {
 
     suspend fun setDeviceRoomLocation(location: String) {
         context.dataStore.edit { it[DEVICE_ROOM_LOCATION_KEY] = location }
+    }
+
+    suspend fun setAutoUpdateEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[AUTO_UPDATE_KEY] = enabled }
     }
 }

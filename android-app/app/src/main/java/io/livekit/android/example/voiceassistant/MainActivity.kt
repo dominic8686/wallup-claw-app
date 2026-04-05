@@ -24,9 +24,14 @@ import io.livekit.android.example.voiceassistant.screen.SettingsRoute
 import io.livekit.android.example.voiceassistant.screen.SettingsScreen
 import io.livekit.android.example.voiceassistant.screen.VoiceAssistantRoute
 import io.livekit.android.example.voiceassistant.screen.VoiceAssistantScreen
+import io.livekit.android.example.voiceassistant.settings.AppSettings
+import io.livekit.android.example.voiceassistant.settings.AppUpdater
 import io.livekit.android.example.voiceassistant.ui.theme.LiveKitVoiceAssistantExampleTheme
 import io.livekit.android.example.voiceassistant.viewmodel.VoiceAssistantViewModel
 import io.livekit.android.util.LoggingLevel
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import androidx.lifecycle.lifecycleScope
 
 class MainActivity : ComponentActivity() {
 
@@ -36,6 +41,18 @@ class MainActivity : ComponentActivity() {
 
         // Initialize bundled emoji font so emojis render on all devices
         EmojiCompat.init(BundledEmojiCompatConfig(this))
+
+        // Auto-update check
+        val appSettings = AppSettings(this)
+        lifecycleScope.launch {
+            val autoUpdate = appSettings.autoUpdateEnabled.first()
+            if (autoUpdate) {
+                val info = AppUpdater.checkForUpdate(BuildConfig.VERSION_NAME)
+                if (info != null && info.isNewer) {
+                    AppUpdater.downloadAndInstall(this@MainActivity, info.apkDownloadUrl)
+                }
+            }
+        }
 
         setContent {
             val navController = rememberNavController()
