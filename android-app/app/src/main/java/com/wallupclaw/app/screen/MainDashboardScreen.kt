@@ -258,9 +258,18 @@ fun MainDashboardScreen() {
     }
     val intercomState by intercomManager.state.collectAsState()
     val currentCall by intercomManager.currentCall.collectAsState()
+    val autoAnswerCalls by appSettings.autoAnswerCalls.collectAsState(initial = false)
     val isCallActive = intercomState == IntercomState.RINGING || intercomState == IntercomState.IN_CALL || intercomState == IntercomState.CALLING
     val showLeftPanel = contactsVisible || isCallActive
     val showRightPanel = isConversation
+
+    // --- Auto-answer incoming calls ---
+    LaunchedEffect(intercomState, autoAnswerCalls) {
+        if (intercomState == IntercomState.RINGING && autoAnswerCalls) {
+            Log.i(TAG, "Auto-answering incoming call")
+            intercomManager.acceptCall()
+        }
+    }
 
     // --- Call room state (separate from voice-room) ---
     var callRoom by remember { mutableStateOf<io.livekit.android.room.Room?>(null) }

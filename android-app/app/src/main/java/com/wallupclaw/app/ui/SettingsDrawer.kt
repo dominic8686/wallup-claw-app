@@ -46,6 +46,7 @@ fun SettingsDrawer(
     val deviceDisplayName by settings.deviceDisplayName.collectAsState(initial = AppSettings.DEFAULT_DEVICE_DISPLAY_NAME)
     val autoUpdateEnabled by settings.autoUpdateEnabled.collectAsState(initial = false)
     val autoStartOnBoot by settings.autoStartOnBoot.collectAsState(initial = true)
+    val autoAnswerCalls by settings.autoAnswerCalls.collectAsState(initial = false)
 
     // Scrim + drawer
     if (visible) {
@@ -316,6 +317,25 @@ fun SettingsDrawer(
                     Switch(
                         checked = autoStartOnBoot,
                         onCheckedChange = { scope.launch { settings.setAutoStartOnBoot(it) } }
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Auto-Answer Calls", fontSize = 14.sp)
+                        Text(
+                            "Automatically accept incoming intercom calls",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = autoAnswerCalls,
+                        onCheckedChange = { scope.launch { settings.setAutoAnswerCalls(it) } }
                     )
                 }
 
