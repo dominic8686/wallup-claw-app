@@ -524,7 +524,7 @@ class DlnaRendererService : Service() {
 
         private fun handleAvTransportAction(session: IHTTPSession): Response {
             val body = readBody(session)
-            val action = extractSoapAction(session, body)
+            val action = extractSoapAction(session, body)?.replace(Regex("[^a-zA-Z0-9]"), "")
             Log.d(TAG, "AVTransport action: $action")
 
             return when (action) {
@@ -573,7 +573,7 @@ class DlnaRendererService : Service() {
 
         private fun handleRenderingControlAction(session: IHTTPSession): Response {
             val body = readBody(session)
-            val action = extractSoapAction(session, body)
+            val action = extractSoapAction(session, body)?.replace(Regex("[^a-zA-Z0-9]"), "")
             Log.d(TAG, "RenderingControl action: $action")
 
             return when (action) {
@@ -612,13 +612,13 @@ class DlnaRendererService : Service() {
 
         private fun extractSoapAction(session: IHTTPSession, body: String): String? {
             // Try SOAPACTION header first
-            val header = session.headers["soapaction"]?.trim('"', ' ')
+            val header = session.headers["soapaction"]?.trim('"', ' ', '\r', '\n')
             if (header != null) {
-                return header.substringAfterLast("#")
+                return header.substringAfterLast("#").trim()
             }
             // Fallback: parse from body
             val match = Regex("<u:(\\w+)").find(body)
-            return match?.groupValues?.get(1)
+            return match?.groupValues?.get(1)?.trim()
         }
 
         private fun extractXmlValue(xml: String, tag: String): String? {
@@ -633,7 +633,8 @@ class DlnaRendererService : Service() {
 
         private fun soapResponse(action: String, innerXml: String, serviceType: String = "AVTransport"): Response {
             val ns = "urn:schemas-upnp-org:service:$serviceType:1"
-            val responseTag = action + "Response"
+            val cleanAction = action.trim().replace(Regex("[^a-zA-Z0-9]"), "")
+            val responseTag = cleanAction + "Response"
             val xml = """<?xml version="1.0" encoding="UTF-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
   <s:Body>
