@@ -932,6 +932,13 @@ fun MainDashboardScreen() {
             )
         }
 
+        // Settings Drawer overlay — draw before the bubble stack so the buttons stay visible on top
+        SettingsDrawer(
+            visible = settingsVisible,
+            onDismiss = { settingsVisible = false },
+            settings = appSettings,
+            haConnectionOk = haConnectionOk,
+        )
         // Bubble buttons — stacked in the chosen corner
         val isBottom = buttonCorner == ButtonCorner.BOTTOM_END || buttonCorner == ButtonCorner.BOTTOM_START
         Column(
@@ -959,18 +966,14 @@ fun MainDashboardScreen() {
                     isCallActive = isCallActive,
                     onClick = { contactsVisible = !contactsVisible },
                 )
-                if (!isConversation) {
-                    SettingsBubble(
-                        onClick = { settingsVisible = true },
-                    )
-                }
+                SettingsBubble(
+                    onClick = { settingsVisible = !settingsVisible },
+                )
             } else {
                 // Bottom corners: keep primary controls closest to the corner edge
-                if (!isConversation) {
-                    SettingsBubble(
-                        onClick = { settingsVisible = true },
-                    )
-                }
+                SettingsBubble(
+                    onClick = { settingsVisible = !settingsVisible },
+                )
                 IntercomBubble(
                     isOpen = contactsVisible,
                     isCallActive = isCallActive,
@@ -989,14 +992,6 @@ fun MainDashboardScreen() {
                 )
             }
         }
-
-        // Settings Drawer overlay
-        SettingsDrawer(
-            visible = settingsVisible,
-            onDismiss = { settingsVisible = false },
-            settings = appSettings,
-            haConnectionOk = haConnectionOk,
-        )
 
     } // end main Box
 }
