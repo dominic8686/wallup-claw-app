@@ -19,7 +19,7 @@ android {
 
     defaultConfig {
         applicationId = "com.wallupclaw.app"
-        minSdk = 24
+        minSdk = 26
         targetSdk = 36
         versionCode = 10
         versionName = "1.9"
@@ -103,8 +103,16 @@ dependencies {
     implementation("androidx.emoji2:emoji2:1.5.0")
     implementation("androidx.emoji2:emoji2-bundled:1.5.0")
 
-    // DLNA/UPnP MediaRenderer — lightweight HTTP server for UPnP control
-    implementation("org.nanohttpd:nanohttpd:2.3.1")
+    // DLNA/UPnP MediaRenderer — full UPnP stack (SSDP, HTTP, SOAP, eventing)
+    implementation("org.jupnp:org.jupnp:3.0.4")
+    implementation("org.jupnp:org.jupnp.support:3.0.4")
+    implementation("org.jupnp:org.jupnp.android:3.0.3")
+    // jUPnP requires Jetty as HTTP transport
+    implementation("org.eclipse.jetty:jetty-server:9.4.56.v20240826")
+    implementation("org.eclipse.jetty:jetty-servlet:9.4.56.v20240826")
+    implementation("org.eclipse.jetty:jetty-client:9.4.56.v20240826")
+    // SLF4J logging for jUPnP on Android
+    implementation("org.slf4j:slf4j-android:1.7.36")
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

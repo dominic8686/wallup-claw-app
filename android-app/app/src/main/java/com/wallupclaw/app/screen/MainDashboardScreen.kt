@@ -11,7 +11,8 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -22,7 +23,6 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -41,7 +41,8 @@ import com.wallupclaw.app.intercom.IntercomManager
 import com.wallupclaw.app.intercom.IntercomState
 import com.wallupclaw.app.settings.AppSettings
 import com.wallupclaw.app.settings.BUNDLED_MODELS
-import com.wallupclaw.app.dlna.DlnaRendererService
+import com.wallupclaw.app.settings.ButtonCorner
+import com.wallupclaw.app.dlna.JupnpRendererService
 import com.wallupclaw.app.state.DeviceState
 import com.wallupclaw.app.state.DeviceStateManager
 import com.wallupclaw.app.ui.*
@@ -63,11 +64,11 @@ private const val TAG = "MainDashboard"
 @Serializable
 object MainDashboardRoute
 
-enum class VoiceState {
-    INITIALIZING,
-    WAKE_WORD,
-    CONVERSATION,
-    ENDING,
+/** Whether the LiveKit mic is unmuted and the native agent is active. */
+enum class MicGateState {
+    INITIALIZING,   // Waiting for wake word engine to initialize
+    WAKE_WORD,      // AudioPipeline running, LiveKit mic muted
+    AGENT_ACTIVE,   // AudioPipeline stopped, LiveKit mic unmuted — native agent handles everything
 }
 
 @OptIn(Beta::class)
@@ -83,23 +84,22 @@ fun MainDashboardScreen() {
     val haUrl by appSettings.haUrl.collectAsState(initial = AppSettings.DEFAULT_HA_URL)
     val livekitUrl by appSettings.livekitServerUrl.collectAsState(initial = AppSettings.DEFAULT_LIVEKIT_URL)
     val tokenServerUrl by appSettings.tokenServerUrl.collectAsState(initial = AppSettings.DEFAULT_TOKEN_SERVER_URL)
-    val avatarEnabled by appSettings.avatarEnabled.collectAsState(initial = false)
     val deviceId by appSettings.deviceId.collectAsState(initial = "__LOADING__")
     val deviceDisplayName by appSettings.deviceDisplayName.collectAsState(initial = AppSettings.DEFAULT_DEVICE_DISPLAY_NAME)
     val deviceRoomLocation by appSettings.deviceRoomLocation.collectAsState(initial = AppSettings.DEFAULT_DEVICE_ROOM_LOCATION)
     val intercomApiKey by appSettings.intercomApiKey.collectAsState(initial = "")
     val selectedWakeWordModel by appSettings.wakeWordModel.collectAsState(initial = BUNDLED_MODELS.first().id)
+    val buttonCorner by appSettings.buttonCorner.collectAsState(initial = ButtonCorner.BOTTOM_END)
 
     // --- Token server HTTP client (attaches auth header) ---
     val tokenServerClient = remember(tokenServerUrl) { TokenServerClient(tokenServerUrl) }
     // Keep API key in sync
     LaunchedEffect(intercomApiKey) { tokenServerClient.apiKey = intercomApiKey }
 
-    // --- Voice state ---
-    var voiceState by remember { mutableStateOf(VoiceState.INITIALIZING) }
+    // --- Voice state (mic-gate pattern) ---
+    var micGateState by remember { mutableStateOf(MicGateState.INITIALIZING) }
     var conversationStatus by remember { mutableStateOf(ConversationStatus.LISTENING) }
     val chatMessages = remember { mutableStateListOf<ChatMessage>() }
-    var messageCounter by remember { mutableIntStateOf(0) }
 
     // --- HA state ---
     var haConnectionOk by remember { mutableStateOf(false) }
@@ -145,71 +145,48 @@ fun MainDashboardScreen() {
     }
     val deviceState by deviceStateManager.state.collectAsState()
 
-    // --- Avatar WebView ref (for JS bridge calls into TalkingHead.js) ---
-    val avatarWebViewRef = remember { mutableStateOf<WebView?>(null) }
-
-    // --- Ending fallback job ---
-    var endingTimeoutJob by remember { mutableStateOf<Job?>(null) }
+    // --- Local camera track for conversation self-view ---
+    var localCameraTrack by remember { mutableStateOf<VideoTrack?>(null) }
 
     // --- Layout ---
-    val isConversation = voiceState == VoiceState.CONVERSATION || voiceState == VoiceState.ENDING
+    val isConversation = micGateState == MicGateState.AGENT_ACTIVE
 
-    // --- Shared conversation lifecycle functions ---
+    // --- Mic-gate lifecycle: wake word toggles LiveKit mic on/off ---
     // All resource management (mic, camera, audio focus) is handled by DeviceStateManager.
-    val startConversation: (String) -> Unit = remember(room, deviceStateManager, avatarEnabled) {
-        { score: String ->
-            if (voiceState == VoiceState.WAKE_WORD) {
-                voiceState = VoiceState.CONVERSATION
+    val activateMic: () -> Unit = remember(room, deviceStateManager) {
+        {
+            if (micGateState == MicGateState.WAKE_WORD) {
+                micGateState = MicGateState.AGENT_ACTIVE
                 conversationStatus = ConversationStatus.LISTENING
                 chatMessages.clear()
                 scope.launch {
-                    // DeviceStateManager handles: stop audioPipeline, enable mic + camera, duck DLNA
+                    // DeviceStateManager: stop audioPipeline → unmute LiveKit mic → duck DLNA → speaker on
                     deviceStateManager.transitionTo(DeviceState.CONVERSATION)
-                    try {
-                        val signalJson = JSONObject().apply {
-                            put("type", "wake_word_detected")
-                            put("score", score)
-                            put("avatar_enabled", avatarEnabled)
+                    Log.i(TAG, "Mic activated — native agent is now listening")
+                    // Capture local camera track (fallback if TrackPublished event was missed)
+                    delay(500)
+                    if (localCameraTrack == null) {
+                        val camPub = room.localParticipant.getTrackPublication(Track.Source.CAMERA)
+                        val track = camPub?.track
+                        if (track is VideoTrack) {
+                            localCameraTrack = track
+                            Log.i(TAG, "Camera track captured via fallback")
                         }
-                        room.localParticipant.publishData(signalJson.toString().toByteArray())
-                        Log.i(TAG, "Sent wake_word_detected (score=$score, avatar=$avatarEnabled)")
-                    } catch (e: Exception) {
-                        Log.e(TAG, "startConversation failed: ${e.message}")
                     }
                 }
             }
         }
     }
 
-    fun resetToWakeWord() {
-        endingTimeoutJob?.cancel()
-        endingTimeoutJob = null
-        scope.launch {
-            // DeviceStateManager handles: disable mic + camera, restart audioPipeline, re-enable security cam
-            deviceStateManager.transitionTo(DeviceState.IDLE)
-            voiceState = VoiceState.WAKE_WORD
-            Log.i(TAG, "Reset to WAKE_WORD")
-        }
-    }
-
-    val endConversation: () -> Unit = remember(room, deviceStateManager) {
+    val deactivateMic: () -> Unit = remember(room, deviceStateManager) {
         {
-            if (voiceState == VoiceState.CONVERSATION) {
-                voiceState = VoiceState.ENDING
-                Log.i(TAG, "Ending conversation, waiting for server confirmation...")
+            if (micGateState == MicGateState.AGENT_ACTIVE) {
                 scope.launch {
-                    try {
-                        val endSignal = JSONObject().put("type", "end_conversation")
-                        room.localParticipant.publishData(endSignal.toString().toByteArray())
-                    } catch (_: Exception) {}
-                }
-                // Fallback: if server doesn't confirm within 3s, force reset
-                endingTimeoutJob = scope.launch {
-                    delay(3000)
-                    if (voiceState == VoiceState.ENDING) {
-                        Log.w(TAG, "Server confirmation timeout, force-resetting to WAKE_WORD")
-                        resetToWakeWord()
-                    }
+                    // DeviceStateManager: mute LiveKit mic → restart audioPipeline → un-duck DLNA
+                    deviceStateManager.transitionTo(DeviceState.IDLE)
+                    micGateState = MicGateState.WAKE_WORD
+                    chatMessages.clear()  // dismiss conversation card
+                    Log.i(TAG, "Mic deactivated — back to wake word")
                 }
             }
         }
@@ -282,7 +259,7 @@ fun MainDashboardScreen() {
     val autoAnswerCalls by appSettings.autoAnswerCalls.collectAsState(initial = false)
     val isCallActive = intercomState == IntercomState.RINGING || intercomState == IntercomState.IN_CALL || intercomState == IntercomState.CALLING
     val showLeftPanel = contactsVisible || isCallActive
-    val showRightPanel = isConversation
+    val showRightPanel = isConversation || chatMessages.isNotEmpty()
 
     // --- Auto-answer incoming calls ---
     LaunchedEffect(intercomState, autoAnswerCalls) {
@@ -393,7 +370,8 @@ fun MainDashboardScreen() {
                 continue
             }
 
-            // Connect to LiveKit with device identity
+            // Connect to LiveKit with device identity — mic starts MUTED
+            // (AudioPipelineManager owns the mic for wake word detection)
             try {
                 val response = withContext(Dispatchers.IO) {
                     tokenServerClient.get("/token?identity=$effectiveDeviceId&room=voice-room-$effectiveDeviceId")
@@ -402,11 +380,10 @@ fun MainDashboardScreen() {
                 val token = json.getString("token")
                 room.connect(livekitUrl, token)
                 roomConnected = true
-                // Force loudspeaker — LiveKit defaults to earpiece via MODE_IN_COMMUNICATION
-                val am = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
-                @Suppress("DEPRECATION")
-                am.isSpeakerphoneOn = true
-                Log.i(TAG, "LiveKit connected as '$effectiveDeviceId', speakerphone forced on")
+                // Mic starts MUTED — wake word detection via AudioPipelineManager.
+                // DeviceStateManager.transitionTo(CONVERSATION) will unmute when triggered.
+                room.localParticipant.setMicrophoneEnabled(false)
+                Log.i(TAG, "LiveKit connected as '$effectiveDeviceId', mic muted (wake word active)")
             } catch (e: Exception) {
                 Log.e(TAG, "LiveKit connect failed: ${e.message}, retrying in 10s...")
                 delay(10_000)
@@ -447,7 +424,7 @@ fun MainDashboardScreen() {
     LaunchedEffect(pendingConversation) {
         if (!pendingConversation) return@LaunchedEffect
         Log.i(TAG, "Remote conversation trigger received")
-        startConversation("remote")
+        activateMic()
         intercomManager.clearConversation()
     }
 
@@ -508,10 +485,6 @@ fun MainDashboardScreen() {
                     if (config.has("auto_start_on_boot")) {
                         appSettings.setAutoStartOnBoot(config.getBoolean("auto_start_on_boot"))
                         Log.i(TAG, "Remote config: auto_start_on_boot = ${config.getBoolean("auto_start_on_boot")}")
-                    }
-                    if (config.has("avatar_enabled")) {
-                        appSettings.setAvatarEnabled(config.getBoolean("avatar_enabled"))
-                        Log.i(TAG, "Remote config: avatar_enabled = ${config.getBoolean("avatar_enabled")}")
                     }
                     if (config.has("wakeword_model")) {
                         appSettings.setWakeWordModel(config.getString("wakeword_model"))
@@ -578,7 +551,7 @@ fun MainDashboardScreen() {
     // --- Start DLNA speaker service ---
     LaunchedEffect(effectiveDeviceId) {
         if (effectiveDeviceId == "tablet-pending") return@LaunchedEffect
-        val dlnaIntent = android.content.Intent(context, DlnaRendererService::class.java).apply {
+        val dlnaIntent = android.content.Intent(context, JupnpRendererService::class.java).apply {
             putExtra("device_id", effectiveDeviceId)
             putExtra("friendly_name", deviceDisplayName.ifEmpty { effectiveDeviceId })
         }
@@ -590,7 +563,7 @@ fun MainDashboardScreen() {
         Log.i(TAG, "DLNA renderer service started for $effectiveDeviceId")
     }
 
-    // --- Initialize voice pipeline ---
+    // --- Initialize voice pipeline (wake word → mic gate) ---
     LaunchedEffect(selectedWakeWordModel) {
         // Initialize wake word with selected model from settings
         val model = BUNDLED_MODELS.find { it.id == selectedWakeWordModel } ?: BUNDLED_MODELS.first()
@@ -599,10 +572,10 @@ fun MainDashboardScreen() {
             wakeWordManager.initialize(model.assetPath)
         }
 
-        // Start audio pipeline
+        // Start audio pipeline (wake word owns the mic; LiveKit mic is muted)
         audioPipeline.start()
-        voiceState = VoiceState.WAKE_WORD
-        Log.i(TAG, "Voice pipeline ready")
+        micGateState = MicGateState.WAKE_WORD
+        Log.i(TAG, "Voice pipeline ready — listening for wake word")
 
         // Process wake word audio
         launch(Dispatchers.Default) {
@@ -614,37 +587,56 @@ fun MainDashboardScreen() {
             }
         }
 
-        // Consume LiveKit audio channel
+        // Consume LiveKit audio channel (prevent backpressure)
         launch(Dispatchers.IO) {
             for (shorts in audioPipeline.livekitAudio) {
-                // Placeholder for custom AudioSource
+                // Not used — LiveKit handles its own audio when mic is unmuted
             }
         }
 
-        // Listen for wake word detections
+        // Listen for wake word detections → activate mic
         launch {
             wakeWordManager.scores.collectLatest { score ->
-                if (score > 0.5f && voiceState == VoiceState.WAKE_WORD) {
+                if (score > 0.5f && micGateState == MicGateState.WAKE_WORD) {
                     Log.i(TAG, "Wake word detected! score=${"%.3f".format(score)}")
-                    startConversation("%.3f".format(score))
+                    activateMic()
                 }
             }
         }
     }
 
     // --- Listen for LiveKit room events; reconnect on disconnect ---
+    // Native agent sends TranscriptionReceived events automatically.
     LaunchedEffect(roomConnected) {
         if (!roomConnected) return@LaunchedEffect
-        Log.i(TAG, "Starting room event listener (persistent)")
+        Log.i(TAG, "Starting room event listener (native agent mode)")
 
         room.events.collect { event ->
-            Log.d(TAG, "Room event: ${event::class.simpleName}")
             when (event) {
                 is RoomEvent.Disconnected -> {
                     Log.w(TAG, "Room disconnected — will reconnect")
                     roomConnected = false  // triggers retry loop
                 }
+                is RoomEvent.TrackPublished -> {
+                    // Capture local camera track for conversation self-view
+                    val track = event.publication.track
+                    val isLocal = event.participant.sid == room.localParticipant.sid
+                    Log.d(TAG, "TrackPublished: isLocal=$isLocal kind=${track?.kind} participant=${event.participant.identity}")
+                    if (isLocal && track is VideoTrack) {
+                        localCameraTrack = track
+                        Log.i(TAG, "Local camera track captured for self-view")
+                    }
+                }
+                is RoomEvent.TrackUnpublished -> {
+                    val track = event.publication.track
+                    val isLocal = event.participant.sid == room.localParticipant.sid
+                    if (isLocal && track is VideoTrack) {
+                        localCameraTrack = null
+                        Log.i(TAG, "Local camera track removed")
+                    }
+                }
                 is RoomEvent.TranscriptionReceived -> {
+                    // Native LiveKit agent sends transcription events for both user and agent
                     for (segment in event.transcriptionSegments) {
                         val isUser = event.participant?.identity == room.localParticipant.identity
                         val existingIdx = chatMessages.indexOfFirst { it.id == segment.id }
@@ -662,65 +654,8 @@ fun MainDashboardScreen() {
                         Log.d(TAG, "Transcription [${if (isUser) "user" else "agent"}]: ${segment.text}")
                     }
                 }
-                is RoomEvent.DataReceived -> {
-                    try {
-                        val text = event.data.toString(Charsets.UTF_8)
-                        val json = JSONObject(text)
-                        val type = json.optString("type", "")
-                        Log.d(TAG, "Data received: type=$type")
-                        when (type) {
-                            "conversation_ended" -> {
-                                Log.i(TAG, "Server sent conversation_ended")
-                                resetToWakeWord()
-                            }
-                            "agent_speak" -> {
-                                // TalkingHead.js avatar: route text to the avatar WebView
-                                val text = json.optString("text", "")
-                                if (text.isNotEmpty()) {
-                                    val escaped = text
-                                        .replace("\\", "\\\\")
-                                        .replace("'", "\\'")
-                                        .replace("\n", " ")
-                                    avatarWebViewRef.value?.evaluateJavascript(
-                                        "if(window.talkingHeadSpeak) window.talkingHeadSpeak('$escaped');", null
-                                    )
-                                    conversationStatus = ConversationStatus.SPEAKING
-                                    Log.d(TAG, "Avatar speak: ${text.take(60)}")
-                                }
-                            }
-                            "chat_message" -> {
-                                val message = json.optString("message", "")
-                                if (message.isNotEmpty()) {
-                                    val isUser = message.startsWith("\uD83C\uDFA4") // 🎤 prefix
-                                    // Strip emoji prefix
-                                    val cleanText = message
-                                        .removePrefix("\uD83C\uDFA4 You: ")  // 🎤 You:
-                                        .removePrefix("\uD83E\uDD16 Hermes: ") // 🤖 Hermes:
-                                        .removePrefix("\uD83C\uDF1F ")  // 🌟 system
-                                        .removePrefix("\uD83D\uDCA4 ")  // 💤 system
-                                        .removePrefix("\uD83C\uDFE0 ")  // 🏠 system
-                                        .trim()
-                                    if (cleanText.isNotEmpty()) {
-                                        messageCounter++
-                                        chatMessages.add(
-                                            ChatMessage(
-                                                id = "data-$messageCounter",
-                                                text = cleanText,
-                                                isUser = isUser,
-                                            )
-                                        )
-                                        conversationStatus = if (isUser) ConversationStatus.THINKING else ConversationStatus.SPEAKING
-                                        Log.d(TAG, "Chat [${if (isUser) "user" else "agent"}]: $cleanText")
-                                    }
-                                }
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.d(TAG, "Non-JSON data received: ${event.data.size} bytes")
-                    }
-                }
                 else -> {
-                    Log.d(TAG, "Unhandled event: ${event::class.simpleName}")
+                    Log.d(TAG, "Room event: ${event::class.simpleName}")
                 }
             }
         }
@@ -739,19 +674,16 @@ fun MainDashboardScreen() {
         }
     }
 
-    // --- Swipe gesture detection: right = contacts, left = settings ---
-    val swipeModifier = Modifier.pointerInput(Unit) {
-        detectHorizontalDragGestures { _, dragAmount ->
-            if (dragAmount < -30) { // Swipe left → settings
-                settingsVisible = true
-            } else if (dragAmount > 30) { // Swipe right → contacts
-                contactsVisible = true
-            }
-        }
+    // --- Corner alignment for bubbles ---
+    val bubbleAlignment = when (buttonCorner) {
+        ButtonCorner.BOTTOM_END -> Alignment.BottomEnd
+        ButtonCorner.BOTTOM_START -> Alignment.BottomStart
+        ButtonCorner.TOP_END -> Alignment.TopEnd
+        ButtonCorner.TOP_START -> Alignment.TopStart
     }
 
     // ==================== UI ====================
-    Box(modifier = Modifier.fillMaxSize().then(swipeModifier)) {
+    Box(modifier = Modifier.fillMaxSize()) {
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val chatCardWidth = maxWidth / 3
             val leftPanelWidth = maxWidth / 3
@@ -973,10 +905,13 @@ fun MainDashboardScreen() {
                 ConversationCard(
                     messages = chatMessages,
                     status = conversationStatus,
-                    avatarEnabled = avatarEnabled,
-                    avatarUrl = if (avatarEnabled) "$tokenServerUrl/avatar" else "",
-                    avatarWebViewRef = avatarWebViewRef,
-                    onClose = { endConversation() },
+                    videoTrack = localCameraTrack,
+                    room = room,
+                    onClose = {
+                        deactivateMic()
+                        chatMessages.clear()  // always dismiss card even if mic already muted
+                        localCameraTrack = null
+                    },
                     modifier = Modifier
                         .width(chatCardWidth)
                         .fillMaxHeight()
@@ -984,25 +919,74 @@ fun MainDashboardScreen() {
             }
         }
 
-        // Voice Bubble (bottom-right, only in wake word / initializing state)
-        if (!isConversation) {
-            VoiceBubble(
-                isListening = voiceState == VoiceState.WAKE_WORD,
-                onClick = { startConversation("1.0") },
-                modifier = Modifier.align(Alignment.BottomEnd)
+        // Tap-to-dismiss scrim when contacts panel is open
+        if (contactsVisible && !isCallActive) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = { contactsVisible = false }
+                    )
             )
         }
 
-        // Settings gear icon (top-right) — hidden while conversation card is open
-        if (!isConversation) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(8.dp)
-            ) {
-                androidx.compose.material3.IconButton(onClick = { settingsVisible = true }) {
-                    Text("⚙", fontSize = 24.sp, color = Color.White.copy(alpha = 0.8f))
+        // Bubble buttons — stacked in the chosen corner
+        val isBottom = buttonCorner == ButtonCorner.BOTTOM_END || buttonCorner == ButtonCorner.BOTTOM_START
+        Column(
+            modifier = Modifier
+                .align(bubbleAlignment)
+                .padding(vertical = 16.dp),
+            horizontalAlignment = if (buttonCorner == ButtonCorner.BOTTOM_END || buttonCorner == ButtonCorner.TOP_END)
+                Alignment.End else Alignment.Start,
+        ) {
+            if (!isBottom) {
+                // Top corners: keep primary controls closest to the corner edge
+                VoiceBubble(
+                    isListening = micGateState == MicGateState.WAKE_WORD,
+                    isAgentActive = micGateState == MicGateState.AGENT_ACTIVE,
+                    onClick = {
+                        if (micGateState == MicGateState.AGENT_ACTIVE) {
+                            deactivateMic()
+                        } else {
+                            activateMic()
+                        }
+                    },
+                )
+                IntercomBubble(
+                    isOpen = contactsVisible,
+                    isCallActive = isCallActive,
+                    onClick = { contactsVisible = !contactsVisible },
+                )
+                if (!isConversation) {
+                    SettingsBubble(
+                        onClick = { settingsVisible = true },
+                    )
                 }
+            } else {
+                // Bottom corners: keep primary controls closest to the corner edge
+                if (!isConversation) {
+                    SettingsBubble(
+                        onClick = { settingsVisible = true },
+                    )
+                }
+                IntercomBubble(
+                    isOpen = contactsVisible,
+                    isCallActive = isCallActive,
+                    onClick = { contactsVisible = !contactsVisible },
+                )
+                VoiceBubble(
+                    isListening = micGateState == MicGateState.WAKE_WORD,
+                    isAgentActive = micGateState == MicGateState.AGENT_ACTIVE,
+                    onClick = {
+                        if (micGateState == MicGateState.AGENT_ACTIVE) {
+                            deactivateMic()
+                        } else {
+                            activateMic()
+                        }
+                    },
+                )
             }
         }
 

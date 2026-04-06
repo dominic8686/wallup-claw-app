@@ -16,8 +16,6 @@ import androidx.emoji2.bundled.BundledEmojiCompatConfig
 import io.livekit.android.LiveKit
 import com.wallupclaw.app.screen.ConnectRoute
 import com.wallupclaw.app.screen.ConnectScreen
-import com.wallupclaw.app.screen.HermesRoute
-import com.wallupclaw.app.screen.HermesScreen
 import com.wallupclaw.app.screen.MainDashboardRoute
 import com.wallupclaw.app.screen.MainDashboardScreen
 import com.wallupclaw.app.screen.PermissionGateRoute
@@ -95,13 +93,6 @@ class MainActivity : ComponentActivity() {
                             }
                             composable<MainDashboardRoute> {
                                 MainDashboardScreen()
-                            }
-                            composable<HermesRoute> {
-                                HermesScreen(
-                                    navigateToSettings = {
-                                        runOnUiThread { navController.navigate(SettingsRoute) }
-                                    }
-                                )
                             }
                             composable<ConnectRoute> {
                                 ConnectScreen(

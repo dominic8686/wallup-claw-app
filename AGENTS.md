@@ -1,8 +1,8 @@
-# Hermes Voice Agent — Architecture & Operations Guide
+# Wallup Claw — Architecture & Operations Guide
 
 ## Overview
 
-A self-hosted voice assistant and multi-tablet intercom system built on **LiveKit** (WebRTC), **Hermes Agent** (AI brain), and **Home Assistant** (smart home hub). Speak to wall-mounted Android tablets, control your home by voice, and call between rooms.
+A self-hosted voice assistant and multi-tablet intercom system built on **LiveKit** (WebRTC) and **Home Assistant** (smart home hub). Speak to wall-mounted Android tablets, control your home by voice, and call between rooms. Managed via the **Wallup Claw Admin Portal** (Next.js web UI).
 
 ## Architecture
 
@@ -15,34 +15,33 @@ A self-hosted voice assistant and multi-tablet intercom system built on **LiveKi
 └────────────┬─────────────┘     └────────────┬─────────────┘
              │ WebRTC audio                    │ WebRTC audio
              ▼                                 ▼
-┌─────────────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────────┐
 │                    LiveKit Server                            │
 │         Proxmox LXC (192.168.211.153:7880)                  │
-│         Rooms: voice-room, call-{id} rooms                  │
-└──────────────────────┬──────────────────────────────────────┘
+│         Rooms: voice-room-{device_id}, call-{id}            │
+└──────────────────────┬────────────────────────────────────┘
                        │
-          ┌────────────┼────────────┐
-          ▼                         ▼
-┌──────────────────┐   ┌───────────────────────┐
-│  Token & Registry │   │  Voice Agent (Python)  │
-│  Server (:8090)   │   │                        │
-│                    │   │  Silero VAD → Whisper  │
-│  /register         │   │  STT → Hermes AI →    │
-│  /devices          │   │  OpenAI TTS → LiveKit  │
-│  /heartbeat        │   │                        │
-│  /signal           │   │  + HA event listener   │
-│  /signals          │   │  + Intercom tools       │
-│  /token            │   │  + MCP servers (56 tools)│
-└──────────────────┘   └───────────────────────┘
-                                │
-                                ▼
-                    ┌───────────────────────┐
-                    │   Home Assistant       │
-                    │   (192.168.211.3:8123) │
-                    │                        │
-                    │   hermes_intercom      │
-                    │   custom integration   │
-                    └───────────────────────┘
+    ┌──────────────┼──────────────┬──────────────┐
+    ▼                              ▼                      ▼
+┌─────────────────┐ ┌──────────────────────┐ ┌───────────────┐
+│ Token & Registry│ │ Voice Agent (Python) │ │ Admin Portal  │
+│ Server (:8090)  │ │                      │ │ (Next.js)     │
+│                 │ │ LiveKit AgentSession │ │ :3000         │
+│ /register       │ │ + HA MCP (92 tools) │ │               │
+│ /devices        │ │ + ask_hermes        │ │ AI models,    │
+│ /heartbeat      │ │   delegation tool   │ │ devices,      │
+│ /signal         │ │                      │ │ Docker, logs  │
+│ /token          │ │                      │ │               │
+└─────────────────┘ └──────────┬───────────┘ └───────────────┘
+                               │
+                               ▼
+                  ┌───────────────────────┐
+                  │   Home Assistant       │
+                  │   (192.168.211.3:8123) │
+                  │   MCP: /api/mcp        │
+                  │   hermes_intercom      │
+                  │   custom integration   │
+                  └───────────────────────┘
 ```
 
 ## Components
@@ -73,36 +72,32 @@ A self-hosted voice assistant and multi-tablet intercom system built on **LiveKi
 **Call signaling types**: `call_request`, `call_accept`, `call_decline`, `call_hangup`, `announcement`
 
 ### 3. Voice Agent
-- **File**: `agent/main.py`
+- **Files**: `agent/main.py` (entry point), `agent/livekit_session.py` (main logic)
 - **Docker**: built from `agent/Dockerfile`
-- **Architecture**: Multi-tablet session manager. Polls token server for registered devices, spawns one `TabletSession` per tablet, each with its own LiveKit room (`voice-room-{device_id}`).
+- **Architecture**: Multi-tablet session manager using the **LiveKit Agents SDK**. Polls token server for registered devices, spawns one `AgentSession` per tablet, each with its own LiveKit room (`voice-room-{device_id}`).
 
-**Key classes**:
-| Class | Purpose |
+**Key components**:
+| Component | Purpose |
 |---|---|
-| `TabletSession` | Per-tablet room with independent VAD, conversation state, TTS, video frames |
-| `MultimodalHandler` | Conversation-aware vision: ambient frame attachment, explicit vision triggers, proactive scene analysis, chat history |
-| `RtspBridge` | Pipes raw video frames through ffmpeg to mediamtx for HA camera integration |
-| `SimpleVAD` | Silero v5 ONNX voice activity detection |
+| `LiveKitAgent` | Agent class with HA MCP tools + ask_hermes delegation tool |
+| `_build_llm()` | Selects LLM based on `LIVEKIT_LLM` env var (realtime or pipeline) |
+| `_build_session()` | Creates AgentSession with appropriate VAD/STT/TTS for the model type |
+| `ask_hermes` | Function tool that delegates complex requests to the Hermes AI brain |
 
-**Voice pipeline** (per tablet):
-1. **VAD** — Silero v5 ONNX, 16kHz, 512-sample chunks, speech threshold 0.5
-2. **STT** — OpenRouter chat completions with `input_audio` (default: `google/gemini-3.1-flash-lite-preview`, configurable via `STT_MODEL`)
-3. **MultimodalHandler** — Routes to GPT-4o vision (with camera frame) or Hermes AIAgent (text-only)
-4. **TTS** — edge-tts or OpenAI TTS (configurable via `TTS_BACKEND`), MP3 → 24kHz PCM via pydub
-5. **Playback** — Published to LiveKit audio track (`STREAM_VOICE_COMMUNICATION`), 20ms frame pacing
+**AI modes**:
+- **Realtime (speech-to-speech)**: Gemini Live or OpenAI Realtime — single model handles VAD, STT, LLM, and TTS
+- **Pipeline**: Separate Silero VAD → STT (Deepgram/Google Chirp) → LLM (Gemini/GPT) → TTS (Cartesia/OpenAI)
 
-**Vision pipeline**:
-1. Video frames captured from tablet's LiveKit video track → JPEG buffer (per device)
-2. `MultimodalHandler.chat()` decides: explicit vision trigger → detailed analysis, ambient → frame attached silently, no frame → text-only backend
-3. Conversation history maintained across turns (up to 20)
-4. Proactive vision via `proactive_describe` data channel message
+**Tools available**:
+- 92 Home Assistant MCP tools (via Streamable HTTP transport to HA's `/api/mcp`)
+- `ask_hermes` delegation to the full Hermes AI agent at `:8642` for calendar, web search, memory, complex tasks
 
-**RTSP bridge**: Each tablet's video stream → ffmpeg rawvideo → H.264 → `rtsp://localhost:8554/tablet-{device_id}` via mediamtx
-
-**Snapshot server**: `GET :8091/snapshot?device=<id>` returns latest JPEG frame
-
-**Toolsets enabled**: `web`, `homeassistant`, `memory`, `terminal` + MCP tools (second_brain, etc.)
+**Configuration** (all via env vars, manageable from Admin Portal):
+| Env Var | Example | Description |
+|---|---|---|
+| `LIVEKIT_LLM` | `openai-realtime` | Model: gemini-live, openai-realtime, gemini-2.5-flash, gpt-4o-mini |
+| `LIVEKIT_VOICE` | `alloy` | Voice for realtime models |
+| `HA_MCP_URL` | `http://192.168.211.3:8123/api/mcp` | Home Assistant MCP endpoint |
 
 ### 4. Android App
 - **Source**: `android-app/`
@@ -134,10 +129,13 @@ A self-hosted voice assistant and multi-tablet intercom system built on **LiveKi
 | `ConversationCard` | Chat panel with live transcripts |
 | `HomeAssistantDetector` | Auto-discovers HA instance on local network |
 
-### 5. Hermes Intercom Tools
-- **File**: `tools/intercom_tool.py`
-- **Tools**: `intercom_list_devices`, `intercom_call`, `intercom_hangup`, `intercom_announce`
-- **Used by**: Hermes AIAgent for voice-triggered intercom commands
+### 5. Admin Portal (Wallup Claw Admin)
+- **Directory**: `admin-dashboard/`
+- **Tech**: Next.js 16, React 19, Tailwind 4, shadcn/ui, TanStack Query
+- **Port**: 3000
+- **Full documentation**: [admin-dashboard/ARCHITECTURE.md](admin-dashboard/ARCHITECTURE.md)
+
+10 pages, 8 API routes. Manages AI model configuration, device fleet, LiveKit server, Docker containers, .env variables, Home Assistant MCP, intercom calls, TTS settings, and live monitoring with SSE log streaming.
 
 ### 6. Home Assistant Integration
 - **Directory**: `custom_components/hermes_intercom/`
@@ -231,22 +229,16 @@ adb install -r android-app\app\build\outputs\apk\debug\app-debug.apk
 
 ## Configuration
 
-### Agent Mode
-Set in `docker-compose.yml` under `voice-agent.environment`:
+### Voice Agent
+Set in `docker-compose.yml` under `voice-agent.environment` (or via the Admin Portal at `:3000/models`):
 
-`AGENT_MODE=hermes` (default)
-Full Hermes AIAgent — tools, memory, Home Assistant integration, MCP servers. Model managed by Hermes' own config in `~/.hermes/config.yaml`.
+| Variable | Default | Options |
+|---|---|---|
+| `LIVEKIT_LLM` | `openai-realtime` | `gemini-live`, `openai-realtime`, `gemini-2.5-flash`, `gpt-4o-mini`, custom string |
+| `LIVEKIT_VOICE` | `alloy` | Puck/Charon/Kore/Fenrir/Aoede (Gemini), alloy/echo/nova/fable/onyx/shimmer (OpenAI) |
+| `HA_MCP_URL` | — | Home Assistant MCP endpoint URL |
 
-`AGENT_MODE=openrouter`
-Lightweight direct OpenRouter call — no tools, no memory. Uses `OPENROUTER_API_KEY` from the mounted `~/.hermes/.env`. Model selected via `AGENT_MODEL`.
-
-`AGENT_MODEL=openai/gpt-4o-mini` (openrouter mode only)
-Any OpenRouter-supported model string. Examples:
-- `google/gemini-2.0-flash`
-- `anthropic/claude-3-haiku`
-- `openai/gpt-4o`
-
-Switching modes requires only a compose file edit — no code changes, no rebuild.
+Changing the model via the Admin Portal writes to `docker-compose.yml` and restarts the voice-agent container automatically.
 
 ### Android App Settings
 Open the app → swipe left or tap ⚙ → Settings:
@@ -321,80 +313,52 @@ data:
 ```
 livekit-voice-agent/
 ├── agent/
-│   ├── main.py                     # Voice agent: TabletSession, MultimodalHandler, RTSP bridge
+│   ├── main.py                     # Entry point — runs livekit_session
+│   ├── livekit_session.py          # LiveKit AgentSession + HA MCP + ask_hermes
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── token-server/
 │   ├── server.py                   # Token + device registry + call signaling + TTS proxy
-│   └── requirements.txt
+│   └── Dockerfile
+├── admin-dashboard/                # Wallup Claw Admin Portal (Next.js 16)
+│   ├── src/app/                    # 10 pages + 8 API routes
+│   ├── src/lib/                    # SSH, auth, settings, types
+│   ├── ARCHITECTURE.md             # Full admin portal architecture doc
+│   └── Dockerfile
 ├── android-app/                    # Kotlin/Compose Android app
 │   └── app/src/main/java/.../
-│       ├── MainActivity.kt
-│       ├── state/DeviceStateManager.kt  # Central resource coordinator
-│       ├── dlna/
-│       │   ├── DlnaRendererService.kt   # DLNA speaker (UPnP MediaRenderer)
-│       │   └── SsdpAdvertiser.kt        # SSDP multicast for HA discovery
-│       ├── settings/AppSettings.kt
+│       ├── state/DeviceStateManager.kt
+│       ├── dlna/JupnpRendererService.kt
 │       ├── intercom/IntercomManager.kt
-│       ├── screen/
-│       │   ├── MainDashboardScreen.kt
-│       │   ├── ContactsScreen.kt
-│       │   ├── IncomingCallOverlay.kt
-│       │   ├── ActiveCallScreen.kt
-│       │   ├── SettingsScreen.kt
-│       │   └── ...
-│       ├── audio/
-│       │   ├── AudioPipelineManager.kt
-│       │   └── WakeWordManager.kt
-│       └── ui/
-│           ├── ConversationCard.kt
-│           ├── VoiceBubble.kt
-│           └── ...
-├── homeassistant/custom_components/hermes_intercom/  # HA integration
-│   ├── __init__.py                 # Coordinator + services
-│   ├── config_flow.py              # UI setup flow
-│   ├── const.py                    # Constants
-│   ├── manifest.json
-│   ├── binary_sensor.py            # Online/offline sensor
-│   ├── sensor.py                   # Call state + last activity + last call
-│   ├── switch.py                   # DND toggle
-│   ├── strings.json
-│   ├── blueprints/automation/      # Automation blueprints
-│   │   ├── doorbell_call_all.yaml
-│   │   ├── missed_call_notify.yaml
-│   │   ├── bedtime_dnd.yaml
-│   │   └── motion_announce.yaml
-│   └── www/
-│       └── hermes-intercom-card.js # Lovelace custom card
-├── tools/
-│   └── intercom_tool.py            # Hermes intercom tools
+│       ├── screen/MainDashboardScreen.kt
+│       ├── audio/AudioPipelineManager.kt
+│       └── settings/AppSettings.kt
+├── homeassistant/custom_components/hermes_intercom/
 ├── livekit.yaml                    # LiveKit server config
-├── docker-compose.yml              # All services (LiveKit, agent, token-server, mediamtx)
-├── .env                            # All credentials and config
+├── docker-compose.yml              # All services
 ├── .env.example                    # Template without secrets
 ├── FEATURES.md                     # Complete feature list
-├── AGENTS.md                       # This file (architecture & operations)
+├── AGENTS.md                       # This file
 └── README.md                       # Project overview
 ```
 
 ## Known Issues & Future Work
 
 ### Completed
-- ✅ Vision AI — Multimodal conversations with camera frame analysis (GPT-4o)
-- ✅ Security Camera — 720p RTSP live stream via mediamtx + snapshot HTTP endpoint
+- ✅ LiveKit AgentSession — Gemini Live, OpenAI Realtime, and pipeline modes
+- ✅ Home Assistant MCP — 92 tools via Streamable HTTP
+- ✅ Admin Portal — Full web UI for managing all settings
 - ✅ DLNA Speaker — UPnP MediaRenderer auto-discovered by HA as `media_player`
 - ✅ Per-Tablet Rooms — Isolated LiveKit rooms per device, no cross-talk
 - ✅ Video Calling — LiveKit video tracks during intercom calls
 - ✅ DeviceStateManager — Central resource coordinator for mic/camera/audio focus
-- ✅ OpenAI TTS backend — Selectable via `TTS_BACKEND=openai` alongside free edge-tts
 
 ### Planned
 - QR code device onboarding (HA generates QR → tablet scans)
-- AI receptionist (Hermes answers on behalf of DND/unanswered tablets)
-- HA device consolidation (camera + speaker + voice under one device)
-- Production LiveKit keys (replace `--dev` mode)
+- AI receptionist (answers on behalf of DND/unanswered tablets)
+- OTA tablet updates via admin portal
+- A/B testing for AI models
 
 ### Known Issues
 - Token server uses in-memory registry — restarts lose device list (tablets re-register on heartbeat 404)
-- Legacy `voice-room` fallback still active for tablets running old APK
 - LiveKit server startup race — voice agent may need restart if it starts before LiveKit is ready

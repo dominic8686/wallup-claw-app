@@ -18,27 +18,47 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
+/**
+ * Voice bubble indicator.
+ *
+ * @param isListening true when wake word engine is active (mic muted, idle)
+ * @param isAgentActive true when LiveKit mic is unmuted and agent is listening/responding
+ * @param onClick tap to manually toggle mic mute/unmute
+ */
 @Composable
 fun VoiceBubble(
     isListening: Boolean,
+    isAgentActive: Boolean = false,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val pulseTarget = when {
+        isAgentActive -> 1.25f   // Bigger pulse when agent is active
+        isListening -> 1.15f     // Gentle pulse when listening for wake word
+        else -> 1f
+    }
     val pulseScale by rememberInfiniteTransition(label = "bubblePulse").animateFloat(
         initialValue = 1f,
-        targetValue = if (isListening) 1.15f else 1f,
+        targetValue = pulseTarget,
         animationSpec = infiniteRepeatable(
-            animation = tween(1200, easing = EaseInOutSine),
+            animation = tween(if (isAgentActive) 800 else 1200, easing = EaseInOutSine),
             repeatMode = RepeatMode.Reverse
         ),
         label = "bubblePulseScale"
     )
 
-    val bubbleColor = Color(0xFF2196F3) // Blue
+    // Green when agent active, blue when listening for wake word, grey when idle
+    val bubbleColor = when {
+        isAgentActive -> Color(0xFF4CAF50)  // Green
+        isListening -> Color(0xFF2196F3)    // Blue
+        else -> Color(0xFF9E9E9E)           // Grey
+    }
+
+    val glowElevation = if (isAgentActive) 16.dp else 8.dp
 
     Box(
         modifier = modifier
-            .padding(24.dp)
+            .padding(horizontal = 24.dp, vertical = 4.dp)
             .size(56.dp)
             .scale(pulseScale),
         contentAlignment = Alignment.Center
@@ -47,7 +67,7 @@ fun VoiceBubble(
         Box(
             modifier = Modifier
                 .size(56.dp)
-                .shadow(8.dp, CircleShape)
+                .shadow(glowElevation, CircleShape)
                 .background(bubbleColor.copy(alpha = 0.2f), CircleShape)
         )
         // Inner solid circle

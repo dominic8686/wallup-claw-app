@@ -24,10 +24,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import android.annotation.SuppressLint
-import android.view.ViewGroup
-import android.webkit.WebChromeClient
-import android.webkit.WebView
-import android.webkit.WebViewClient
+import io.livekit.android.room.Room
+import io.livekit.android.room.track.VideoTrack
 
 data class ChatMessage(
     val id: String,
@@ -47,9 +45,8 @@ enum class ConversationStatus {
 fun ConversationCard(
     messages: List<ChatMessage>,
     status: ConversationStatus,
-    avatarEnabled: Boolean = false,
-    avatarUrl: String = "",
-    avatarWebViewRef: MutableState<WebView?>? = null,
+    videoTrack: VideoTrack? = null,
+    room: Room? = null,
     onClose: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -113,30 +110,32 @@ fun ConversationCard(
             }
         }
 
-        // Avatar WebView (TalkingHead.js)
-        if (avatarEnabled && avatarUrl.isNotEmpty()) {
-            AndroidView(
-                factory = { ctx ->
-                    WebView(ctx).apply {
-                        layoutParams = ViewGroup.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT
-                        )
-                        settings.javaScriptEnabled = true
-                        settings.domStorageEnabled = true
-                        settings.mediaPlaybackRequiresUserGesture = false
-                        webViewClient = WebViewClient()
-                        webChromeClient = WebChromeClient()
-                        loadUrl(avatarUrl)
-                        avatarWebViewRef?.value = this
-                    }
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(0.65f)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(Color.Black)
-            )
+        // Local camera self-view (mirrored front camera)
+        if (videoTrack != null && room != null) {
+            key(videoTrack) {
+                val track = videoTrack
+                val lkRoom = room
+                AndroidView(
+                    factory = { ctx ->
+                        livekit.org.webrtc.SurfaceViewRenderer(ctx).apply {
+                            // Use room's shared EGL context for proper rendering
+                            lkRoom.initVideoRenderer(this)
+                            setMirror(true)
+                            setEnableHardwareScaler(true)
+                            track.addRenderer(this)
+                        }
+                    },
+                    onRelease = { renderer ->
+                        track.removeRenderer(renderer)
+                        renderer.release()
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(200.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color.Black)
+                )
+            }
         }
 
         // Divider

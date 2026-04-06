@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -40,13 +41,13 @@ fun SettingsDrawer(
     val haUrl by settings.haUrl.collectAsState(initial = AppSettings.DEFAULT_HA_URL)
     val livekitUrl by settings.livekitServerUrl.collectAsState(initial = AppSettings.DEFAULT_LIVEKIT_URL)
     val tokenUrl by settings.tokenServerUrl.collectAsState(initial = AppSettings.DEFAULT_TOKEN_SERVER_URL)
-    val avatarEnabled by settings.avatarEnabled.collectAsState(initial = false)
     val intercomApiKey by settings.intercomApiKey.collectAsState(initial = "")
     val deviceId by settings.deviceId.collectAsState(initial = AppSettings.DEFAULT_DEVICE_ID)
     val deviceDisplayName by settings.deviceDisplayName.collectAsState(initial = AppSettings.DEFAULT_DEVICE_DISPLAY_NAME)
     val autoUpdateEnabled by settings.autoUpdateEnabled.collectAsState(initial = false)
     val autoStartOnBoot by settings.autoStartOnBoot.collectAsState(initial = true)
     val autoAnswerCalls by settings.autoAnswerCalls.collectAsState(initial = false)
+    val buttonCorner by settings.buttonCorner.collectAsState(initial = ButtonCorner.BOTTOM_END)
 
     // Scrim + drawer
     if (visible) {
@@ -278,26 +279,6 @@ fun SettingsDrawer(
 
                 HorizontalDivider()
 
-                // Avatar
-                Text("Avatar", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Enable Avatar", fontSize = 14.sp)
-                        Text(
-                            "TalkingHead.js — served from token server",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(
-                        checked = avatarEnabled,
-                        onCheckedChange = { scope.launch { settings.setAvatarEnabled(it) } }
-                    )
-                }
-
-                HorizontalDivider()
-
                 // App Settings
                 Text("App", fontWeight = FontWeight.Bold, fontSize = 16.sp)
 
@@ -338,6 +319,69 @@ fun SettingsDrawer(
                         onCheckedChange = { scope.launch { settings.setAutoAnswerCalls(it) } }
                     )
                 }
+
+                HorizontalDivider()
+
+                // Button Position
+                Text("Button Position", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Text(
+                    "Choose which corner the voice and intercom buttons appear in.",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                // Visual corner picker — 2x2 grid
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(16f / 9f)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    ButtonCorner.entries.forEach { corner ->
+                        val alignment = when (corner) {
+                            ButtonCorner.TOP_START -> Alignment.TopStart
+                            ButtonCorner.TOP_END -> Alignment.TopEnd
+                            ButtonCorner.BOTTOM_START -> Alignment.BottomStart
+                            ButtonCorner.BOTTOM_END -> Alignment.BottomEnd
+                        }
+                        val isSelected = buttonCorner == corner
+                        Box(
+                            modifier = Modifier
+                                .align(alignment)
+                                .padding(8.dp)
+                                .size(40.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(
+                                    if (isSelected) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.surface
+                                )
+                                .border(
+                                    width = if (isSelected) 2.dp else 1.dp,
+                                    color = if (isSelected) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                                    shape = RoundedCornerShape(8.dp)
+                                )
+                                .clickable {
+                                    scope.launch { settings.setButtonCorner(corner) }
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                "●",
+                                fontSize = 14.sp,
+                                color = if (isSelected) MaterialTheme.colorScheme.onPrimary
+                                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            )
+                        }
+                    }
+                }
+
+                Text(
+                    "Selected: ${buttonCorner.displayName}",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
 
                 HorizontalDivider()
 

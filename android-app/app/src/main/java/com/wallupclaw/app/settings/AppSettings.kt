@@ -35,6 +35,17 @@ val BUNDLED_MODELS = listOf(
     WakeWordModelInfo("hey_mycroft", "Hey Mycroft", "wakeword_models/hey_mycroft_v0.1.onnx"),
 )
 
+enum class ButtonCorner(val value: String, val displayName: String) {
+    BOTTOM_END("bottom_end", "Bottom Right"),
+    BOTTOM_START("bottom_start", "Bottom Left"),
+    TOP_END("top_end", "Top Right"),
+    TOP_START("top_start", "Top Left");
+
+    companion object {
+        fun fromValue(value: String) = entries.find { it.value == value } ?: BOTTOM_END
+    }
+}
+
 enum class UpdateInterval(val id: String, val displayName: String, val millis: Long) {
     EVERY_5MIN("every_5min", "Every 5 minutes", 300_000L),
     EVERY_15MIN("every_15min", "Every 15 minutes", 900_000L),
@@ -60,7 +71,6 @@ class AppSettings(private val context: Context) {
         private val HA_AUTO_DETECTED_KEY = booleanPreferencesKey("ha_auto_detected")
         private val LIVEKIT_SERVER_URL_KEY = stringPreferencesKey("livekit_server_url")
         private val TOKEN_SERVER_URL_KEY = stringPreferencesKey("token_server_url")
-        private val AVATAR_ENABLED_KEY = booleanPreferencesKey("avatar_enabled")
         private val DEVICE_ID_KEY = stringPreferencesKey("device_id")
         private val DEVICE_DISPLAY_NAME_KEY = stringPreferencesKey("device_display_name")
         private val DEVICE_ROOM_LOCATION_KEY = stringPreferencesKey("device_room_location")
@@ -71,6 +81,7 @@ class AppSettings(private val context: Context) {
         private val INTERCOM_API_KEY_KEY = stringPreferencesKey("intercom_api_key")
         private val AUTO_START_ON_BOOT_KEY = booleanPreferencesKey("auto_start_on_boot")
         private val AUTO_ANSWER_CALLS_KEY = booleanPreferencesKey("auto_answer_calls")
+        private val BUTTON_CORNER_KEY = stringPreferencesKey("button_corner")
 
         const val DEFAULT_HA_URL = "http://homeassistant.local:8123"
         const val DEFAULT_LIVEKIT_URL = "ws://192.168.211.153:7880"
@@ -106,10 +117,6 @@ class AppSettings(private val context: Context) {
 
     val tokenServerUrl: Flow<String> = context.dataStore.data.map { prefs ->
         prefs[TOKEN_SERVER_URL_KEY] ?: DEFAULT_TOKEN_SERVER_URL
-    }
-
-    val avatarEnabled: Flow<Boolean> = context.dataStore.data.map { prefs ->
-        prefs[AVATAR_ENABLED_KEY] ?: false
     }
 
     val deviceId: Flow<String> = context.dataStore.data.map { prefs ->
@@ -152,6 +159,10 @@ class AppSettings(private val context: Context) {
         prefs[AUTO_ANSWER_CALLS_KEY] ?: false
     }
 
+    val buttonCorner: Flow<ButtonCorner> = context.dataStore.data.map { prefs ->
+        ButtonCorner.fromValue(prefs[BUTTON_CORNER_KEY] ?: ButtonCorner.BOTTOM_END.value)
+    }
+
     suspend fun setCallMode(mode: CallMode) {
         context.dataStore.edit { it[CALL_MODE_KEY] = mode.value }
     }
@@ -178,10 +189,6 @@ class AppSettings(private val context: Context) {
 
     suspend fun setTokenServerUrl(url: String) {
         context.dataStore.edit { it[TOKEN_SERVER_URL_KEY] = url }
-    }
-
-    suspend fun setAvatarEnabled(enabled: Boolean) {
-        context.dataStore.edit { it[AVATAR_ENABLED_KEY] = enabled }
     }
 
     suspend fun setDeviceId(id: String) {
@@ -222,5 +229,9 @@ class AppSettings(private val context: Context) {
 
     suspend fun setAutoAnswerCalls(enabled: Boolean) {
         context.dataStore.edit { it[AUTO_ANSWER_CALLS_KEY] = enabled }
+    }
+
+    suspend fun setButtonCorner(corner: ButtonCorner) {
+        context.dataStore.edit { it[BUTTON_CORNER_KEY] = corner.value }
     }
 }

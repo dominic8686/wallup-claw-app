@@ -17,81 +17,35 @@ services:
   voice-agent:
     build:
       context: ./agent
-      # Passes AGENT_MODE into the build so the Dockerfile can conditionally
-      # install Hermes from GitHub. Matches the runtime AGENT_MODE env var below.
-      args:
-        - AGENT_MODE=${AGENT_MODE:-hermes}
     network_mode: host
     environment:
-      # LiveKit connection — specific to this project, not in ~/.hermes/.env
+      # LiveKit connection
       - LIVEKIT_URL=ws://localhost:7880
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
 
-      # --- Agent mode ---
-      # AGENT_MODE=hermes      Full Hermes AIAgent: tools, memory, HA, MCP (default)
-      # AGENT_MODE=openrouter  Lightweight direct OpenRouter call, no tools
-      - AGENT_MODE=hermes
+      # --- LiveKit AgentSession ---
+      # LIVEKIT_LLM: gemini-live | openai-realtime | gemini-2.5-flash | gpt-4o-mini
+      # LIVEKIT_VOICE: Puck | Charon | Kore | Fenrir | Aoede (Gemini) | alloy | echo (OpenAI)
+      - LIVEKIT_LLM=openai-realtime
+      - LIVEKIT_VOICE=alloy
+      # OPENAI_API_KEY is loaded from ~/.hermes/.env via load_dotenv
 
-      # AGENT_MODEL selects the LLM in openrouter mode only.
-      # Ignored in hermes mode (Hermes manages its own model config).
-      # Examples: openai/gpt-4o-mini  google/gemini-2.0-flash  anthropic/claude-3-haiku
-      - AGENT_MODEL=openai/gpt-4o-mini
-
-      # --- TTS backend ---
-      # TTS_BACKEND=edge-tts   Free Microsoft neural voices, no API key needed
-      # TTS_BACKEND=openai     OpenAI TTS (tts-1), requires OPENAI_API_KEY
-      # TTS_VOICE              Voice name matching the selected backend
-      #   edge-tts examples:  en-GB-SoniaNeural  en-US-JennyNeural
-      #   openai examples:    nova  alloy  echo  fable  onyx  shimmer
-      - TTS_BACKEND=openai
-      - TTS_VOICE=nova
-
-      # --- Avatar mode ---
-      # Set AVATAR_ENABLED=true to use the TalkingHead.js avatar instead of LiveKit TTS.
-      # The agent will send text via data channel; the avatar page handles TTS + lip sync.
-      - AVATAR_ENABLED=true
-
-      # --- Vision AI ---
-      # Model used for visual queries ("what do you see?"). Must support image input.
-      - VISION_MODEL=gpt-4o
-
-      # --- Snapshot server (for HA Generic Camera integration) ---
-      # Serves latest camera frame as JPEG at GET /snapshot.
-      # With network_mode: host, this port is directly accessible on the LXC IP.
-      - SNAPSHOT_PORT=8091
-
-      # --- RTSP bridge (LiveKit video -> mediamtx -> HA/Frigate) ---
-      # Each tablet publishes to rtsp://<host>:8554/tablet-<device_id>
-      - RTSP_ENABLED=true
-      - RTSP_SERVER=rtsp://localhost:8554
-      - RTSP_FPS=5
+      # --- Home Assistant via MCP ---
+      # HA add-on: http://<ha-ip>:9583/private_<secret>
+      # HA built-in: http://<ha-ip>:8123/api/mcp (needs HA_MCP_TOKEN)
+      # HA_MCP_TOKEN is loaded from ~/.hermes/.env at runtime (HASS_TOKEN)
+      - HA_MCP_URL=http://192.168.211.3:8123/api/mcp
 
       # --- Multi-tablet session manager ---
-      # Agent polls token server to discover registered tablets and joins
-      # per-tablet rooms (voice-room-{device_id}).
       - TOKEN_SERVER_URL=http://localhost:8090
       - DEVICE_POLL_INTERVAL=15
       - INTERCOM_API_KEY=${INTERCOM_API_KEY}
-
-      # OpenRouter — LLM (all modes) + STT transcription
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-
-      # All other Hermes-specific keys (HASS, Browserbase, Firecrawl, etc.)
-      # are loaded by agent.py via load_dotenv('/root/.hermes/.env') from the mount below.
     volumes:
-      # Hermes runtime data: .env (all API keys), config.yaml, memories, skills, sessions
+      # API keys loaded at runtime via load_dotenv
       - /root/.hermes:/root/.hermes
     depends_on:
       - livekit-server
-    restart: unless-stopped
-
-  # RTSP relay server — receives RTSP publish from voice-agent's ffmpeg bridge
-  # and serves live camera streams to HA / Frigate / VLC.
-  # Each tablet gets its own path: rtsp://<host>:8554/tablet-<device_id>
-  mediamtx:
-    image: bluenviron/mediamtx:latest
-    network_mode: host
     restart: unless-stopped
 
   token-server:
@@ -108,9 +62,23 @@ services:
       - TTS_VOICE=nova
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - INTERCOM_API_KEY=${INTERCOM_API_KEY}
-    volumes:
-      # Mount avatar static files so they are served at GET /avatar
-      - ./avatar:/app/avatar:ro
     depends_on:
       - livekit-server
+    restart: unless-stopped
+
+  admin-dashboard:
+    build: ./admin-dashboard
+    network_mode: host
+    environment:
+      - LXC_HOST=127.0.0.1
+      - LXC_USER=root
+      - LXC_SSH_KEY=/ssh/admin_dashboard
+      - COMPOSE_DIR=/opt/livekit-voice-agent
+      - NEXT_PUBLIC_TOKEN_SERVER_URL=http://localhost:8090
+      - HOSTNAME=0.0.0.0
+      - PORT=3000
+    volumes:
+      - /root/.ssh/admin_dashboard:/ssh/admin_dashboard:ro
+    depends_on:
+      - token-server
     restart: unless-stopped

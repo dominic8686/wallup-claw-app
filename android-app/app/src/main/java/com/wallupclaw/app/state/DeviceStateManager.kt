@@ -22,14 +22,14 @@ private const val TAG = "DeviceStateManager"
  *
  * Resource ownership per state:
  *   IDLE:
- *     Mic      → AudioPipelineManager (wake word detection)
+ *     Mic      → AudioPipelineManager (wake word detection), LiveKit mic MUTED
  *     Camera   → voice-room low-res track (security cam, if enabled)
  *     Speaker  → DLNA free to play music
  *
  *   CONVERSATION:
- *     Mic      → voice-room (LiveKit)
+ *     Mic      → LiveKit (unmuted), AudioPipelineManager STOPPED
  *     Camera   → voice-room (for vision AI queries)
- *     Speaker  → voice-room TTS playback, DLNA ducked
+ *     Speaker  → voice-room agent audio, DLNA ducked
  *
  *   INTERCOM_CALL:
  *     Mic      → call-room (LiveKit)
@@ -108,14 +108,14 @@ class DeviceStateManager(
         // --- Teardown old state ---
         when (oldState) {
             DeviceState.IDLE -> {
-                // Stop wake word audio pipeline (releases AudioRecord)
+                // Stop wake word audio pipeline (releases AudioRecord so LiveKit can take mic)
                 audioPipeline.stop()
                 Log.d(TAG, "Teardown IDLE: audioPipeline stopped")
             }
             DeviceState.CONVERSATION -> {
-                // Disable voice-room mic
+                // Mute voice-room mic (LiveKit stops capturing, frees hardware for wake word)
                 try { voiceRoom.localParticipant.setMicrophoneEnabled(false) } catch (e: Exception) {
-                    Log.w(TAG, "Failed to disable voice-room mic: ${e.message}")
+                    Log.w(TAG, "Failed to mute voice-room mic: ${e.message}")
                 }
                 // Disable voice-room camera (unless security cam keeps it on — handled in setup)
                 try { voiceRoom.localParticipant.setCameraEnabled(false) } catch (e: Exception) {
@@ -123,7 +123,7 @@ class DeviceStateManager(
                 }
                 // Release audio focus (un-duck DLNA)
                 releaseAudioFocus()
-                Log.d(TAG, "Teardown CONVERSATION: mic off, camera off, audio focus released")
+                Log.d(TAG, "Teardown CONVERSATION: mic muted, camera off, audio focus released")
             }
             DeviceState.INTERCOM_CALL -> {
                 // Disable call-room mic + camera (caller is responsible for disconnecting the call room)
@@ -146,24 +146,26 @@ class DeviceStateManager(
         // --- Setup new state ---
         when (newState) {
             DeviceState.IDLE -> {
-                // Restart wake word detection
+                // Restart wake word detection (AudioPipelineManager owns the mic)
                 audioPipeline.start()
                 // Re-enable security camera on voice-room if configured
                 if (securityCameraEnabled) {
                     safeEnableCamera(voiceRoom, "Setup IDLE: security camera")
                 }
-                Log.d(TAG, "Setup IDLE: audioPipeline started")
+                Log.d(TAG, "Setup IDLE: audioPipeline started, LiveKit mic muted")
             }
             DeviceState.CONVERSATION -> {
-                // Enable voice-room mic
+                // Unmute voice-room mic (LiveKit agent starts hearing us)
                 try { voiceRoom.localParticipant.setMicrophoneEnabled(true) } catch (e: Exception) {
-                    Log.e(TAG, "Failed to enable voice-room mic: ${e.message}")
+                    Log.e(TAG, "Failed to unmute voice-room mic: ${e.message}")
                 }
                 // Enable voice-room camera for vision AI
                 safeEnableCamera(voiceRoom, "Setup CONVERSATION: camera")
                 // Request audio focus to duck DLNA
                 requestAudioFocus(duck = true)
-                Log.d(TAG, "Setup CONVERSATION: mic on, camera on, DLNA ducked")
+                // Force loudspeaker so agent audio is audible
+                forceSpeakerOutput()
+                Log.d(TAG, "Setup CONVERSATION: mic unmuted, camera on, DLNA ducked, speaker on")
             }
             DeviceState.INTERCOM_CALL -> {
                 // Pause security camera on voice-room (single camera can't serve two rooms)
@@ -245,8 +247,37 @@ class DeviceStateManager(
         }
     }
 
+    /** Route audio to the loudspeaker instead of earpiece and boost volume. */
+    @Suppress("DEPRECATION")
+    private fun forceSpeakerOutput() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            // API 31+ — use setCommunicationDevice with the built-in speaker
+            val speaker = audioManager.availableCommunicationDevices.firstOrNull {
+                it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+            }
+            if (speaker != null) {
+                val ok = audioManager.setCommunicationDevice(speaker)
+                Log.i(TAG, "setCommunicationDevice(speaker) = $ok")
+            } else {
+                audioManager.isSpeakerphoneOn = true
+                Log.i(TAG, "Fallback: isSpeakerphoneOn = true")
+            }
+        } else {
+            audioManager.isSpeakerphoneOn = true
+            Log.i(TAG, "isSpeakerphoneOn = true (pre-S)")
+        }
+        // Boost voice call volume to max so agent audio is clearly audible
+        val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
+        audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, maxVol, 0)
+        Log.i(TAG, "Voice call volume set to max: $maxVol")
+    }
+
     fun release() {
         scope.cancel()
         releaseAudioFocus()
+        // Clear communication device override on release
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            audioManager.clearCommunicationDevice()
+        }
     }
 }

@@ -1,31 +1,18 @@
 # Features
 
-Complete feature list for the Hermes Voice Agent / Tablet Super-Device platform.
+Complete feature list for the Wallup Claw voice agent and tablet platform.
 
 ## Voice Assistant
 
 - **Wake Word Detection** — On-device "Hey Jarvis" (or Alexa, Hey Mycroft) via ONNX models running locally on the tablet. No cloud dependency for wake word.
-- **Speech-to-Text** — OpenRouter audio-capable models (default: Gemini Flash Lite) transcribe utterances to text.
-- **AI Conversation** — Full Hermes AIAgent with tool calling, persistent memory, web search, Home Assistant control, and 56+ MCP server tools. Alternatively, lightweight OpenRouter direct mode.
-- **Text-to-Speech** — Edge-TTS (free, no API key) or OpenAI TTS (`nova`, `alloy`, etc.). Configurable via `TTS_BACKEND` env var.
+- **LiveKit AgentSession** — Uses the official LiveKit Agents framework with two modes:
+  - **Realtime (speech-to-speech)**: Gemini Live or OpenAI Realtime — server-side VAD, STT, and TTS in a single model
+  - **Pipeline**: Separate STT (Deepgram, Google Chirp) → LLM (Gemini Flash, GPT-4o) → TTS (Cartesia, OpenAI)
+- **Home Assistant MCP** — 92 tools for smart home control via Streamable HTTP MCP transport
+- **Hermes Delegation** — `ask_hermes` tool delegates complex requests (calendar, web search, memory, automations) to the full Hermes AI agent
 - **Live Transcripts** — Real-time user/assistant transcripts displayed in the conversation card via LiveKit data channel.
-- **Silence Timeout** — Conversations auto-end after 30s of no speech, returning to wake word mode.
 - **Per-Tablet Rooms** — Each tablet gets its own isolated LiveKit room (`voice-room-{device_id}`). Conversations on one tablet never bleed to another.
-
-## Vision AI (Multimodal)
-
-- **Ambient Vision** — When `VISION_ALWAYS_ATTACH=true` (default), every utterance during a conversation includes the latest camera frame. The AI always "sees" what the user sees.
-- **Explicit Vision Queries** — Phrases like "What do you see?", "Look at this", "Read this", "How many?" trigger detailed visual analysis with higher resolution.
-- **Conversation-Aware Vision** — The `MultimodalHandler` maintains a multimodal chat history (text + images) across turns, enabling follow-up questions about previous frames.
-- **Proactive Scene Analysis** — External triggers (HA automations, doorbell) can ask the AI to describe what the camera sees via `proactive_describe` data channel messages.
-- **Vision Model Selection** — Configurable via `VISION_MODEL` env var (default: `gpt-4o`). Any OpenAI-compatible vision model works.
-
-## Security Camera
-
-- **Always-On Camera Stream** — Front camera publishes a continuous 720p @ 15fps video track via LiveKit when `security_camera_enabled` is true (default).
-- **RTSP Live Stream** — LiveKit video frames are piped through ffmpeg to a `mediamtx` RTSP server. Each tablet streams at `rtsp://<host>:8554/tablet-<device_id>`. Compatible with HA Generic Camera, Frigate, VLC.
-- **Snapshot HTTP Endpoint** — `GET /snapshot` (or `GET /snapshot?device=<id>`) returns the latest JPEG frame on port 8091. Works with HA Generic Camera `still_image_url`.
-- **Per-Device Frame Buffers** — Each tablet's video frames are stored independently, enabling multi-tablet camera dashboards.
+- **Configurable via Admin Portal** — Model, voice, temperature, and system prompt can be changed from the web UI without SSH.
 
 ## DLNA Speaker (Home Assistant `media_player`)
 
@@ -84,10 +71,22 @@ Complete feature list for the Hermes Voice Agent / Tablet Super-Device platform.
 - **Room Disconnect Auto-Reconnect** — Handles LiveKit disconnections gracefully with automatic retry.
 - **Swipe Gestures** — Swipe right for contacts, swipe left for settings.
 
+## Admin Portal (Wallup Claw Admin)
+
+- **AI Model Configuration** — Switch between Gemini Live, OpenAI Realtime, pipeline models, and custom model strings. Voice selector, temperature slider, system prompt editor with presets.
+- **Device Fleet Management** — View all tablets, edit names/rooms, bulk assign, force disconnect.
+- **LiveKit Server Settings** — Port, RTC range, logging level, API credentials.
+- **System Management** — Docker container status, per-service restart/rebuild, log viewer, .env editor.
+- **Home Assistant Integration** — MCP URL config, connection test, browse 92+ tools.
+- **Intercom Management** — Active calls monitor, call history, editable timeouts.
+- **TTS Configuration** — Backend/voice selector, test playback.
+- **Live Monitor** — Real-time device heartbeats, active calls, LiveKit rooms, SSE log streaming.
+- **Authentication** — Password-protected with httpOnly session cookies.
+- **Dark/Light Theme** — Toggle in sidebar, persisted to localStorage.
+- **Mobile Responsive** — Sidebar becomes drawer on mobile.
+
 ## Infrastructure
 
-- **Docker Compose** — All services (LiveKit, voice agent, token server, mediamtx) deployed via single `docker-compose.yml`.
+- **Docker Compose** — All services (LiveKit, voice agent, token server, admin dashboard) deployed via single `docker-compose.yml`.
 - **Proxmox LXC** — Runs on Debian 13 container with `network_mode: host` for WebRTC UDP compatibility.
-- **mediamtx Sidecar** — Lightweight RTSP relay server for camera streams.
-- **Multi-Tablet Session Manager** — Agent polls token server for registered devices and spawns independent `TabletSession` per tablet.
-- **Legacy Room Fallback** — Shared `voice-room` for tablets not yet updated to per-tablet rooms.
+- **Multi-Tablet Session Manager** — Agent polls token server for registered devices and spawns independent AgentSession per tablet.

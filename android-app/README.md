@@ -1,34 +1,35 @@
-<img src="./.github/assets/app-icon.png" alt="Voice Assistant App Icon" width="100" height="100">
+# Wallup Claw — Android App
 
-# Android Agent Starter
+Kotlin/Compose Android app for wall-mounted tablets. Provides voice assistant, DLNA speaker, and multi-tablet intercom functionality.
 
-This is a starter template for [LiveKit Agents](https://docs.livekit.io/agents/overview/) that provides a simple voice interface using the [LiveKit Android SDK](https://github.com/livekit/client-sdk-android).
+## Features
 
-This template is free for you to use or modify as you see fit.
+- **Voice Assistant** — "Hey Jarvis" wake word (ONNX) → LiveKit AgentSession conversation
+- **DLNA Speaker** — UPnP MediaRenderer auto-discovered by Home Assistant
+- **Intercom** — Room-to-room video/audio calls via LiveKit WebRTC
+- **HA Dashboard** — Embedded WebView showing your Home Assistant dashboard
+- **Security Camera** — Optional 720p camera stream via LiveKit video track
 
-## Getting started
+## Build
 
-The easiest way to get this app running is with a [token server](https://docs.livekit.io/frontends/authentication/tokens/sandbox-token-server/) and the [LiveKit CLI](https://docs.livekit.io/home/cli/cli-setup/).
+```powershell
+# Debug build
+android-app\gradlew.bat -p android-app assembleDebug
 
-First, enable the token server from your project's **Options** on the [Settings](https://cloud.livekit.io/projects/p_/settings/project) page in LiveKit Cloud and copy the `sandboxID`.
+# Release build
+android-app\gradlew.bat -p android-app assembleRelease
 
-Then, run the following command to automatically clone this template and connect it to LiveKit Cloud:
-
-```bash
-lk app create --template agent-starter-android --sandbox <token_server_sandbox_id>
+# Install on connected tablet
+adb install -r android-app\app\build\outputs\apk\release\app-release.apk
 ```
 
-Build and run the app in Android Studio.
+## Configuration
 
-You'll also need an agent to speak with. Try our starter agent for [Python](https://github.com/livekit-examples/agent-starter-python), [Node.js](https://github.com/livekit-examples/agent-starter-node), or [create your own from scratch](https://docs.livekit.io/agents/start/voice-ai/).
+Swipe left or tap ⚙ in the app to access settings:
 
-> [!NOTE]
-> To setup without the LiveKit CLI, clone the repository and edit the `TokenExt.kt` file to add either a `sandboxID` (from your project's **Options** on the [Settings](https://cloud.livekit.io/projects/p_/settings/project) page), or a [manually generated](#token-generation) URL and token.
+- **Device Identity**: Unique ID, display name, room location
+- **Wake Word**: Model selection (Hey Jarvis, Alexa, Hey Mycroft), sensitivity
+- **Server URLs**: LiveKit server and token server addresses
+- **Call Mode**: Manual (tap to start) or Wake Word (always listening)
 
-## Token generation
-
-In a production environment, you will be responsible for developing a solution to [generate tokens for your users](https://docs.livekit.io/home/server/generating-tokens/) which is integrated with your authentication solution. You should disable the token server and modify `TokenExt.kt` to use your own token server.
-
-## Contributing
-
-This template is open source and we welcome contributions! Please open a PR or issue through GitHub, and don't forget to join us in the [LiveKit Community Slack](https://livekit.io/join-slack)!
+Device settings can also be pushed remotely via the Admin Portal's device fleet page.
