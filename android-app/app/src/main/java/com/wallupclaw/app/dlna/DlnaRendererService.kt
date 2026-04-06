@@ -578,24 +578,24 @@ class DlnaRendererService : Service() {
 
             return when (action) {
                 "GetVolume" -> {
-                    soapResponse("GetVolume", "<CurrentVolume>$volume</CurrentVolume>")
+                    soapResponse("GetVolume", "<CurrentVolume>$volume</CurrentVolume>", "RenderingControl")
                 }
                 "SetVolume" -> {
                     val vol = extractXmlValue(body, "DesiredVolume")?.toIntOrNull() ?: volume
                     setVolume(vol)
-                    soapOkResponse("SetVolume")
+                    soapOkResponse("SetVolume", "RenderingControl")
                 }
                 "GetMute" -> {
-                    soapResponse("GetMute", "<CurrentMute>${if (muted) "1" else "0"}</CurrentMute>")
+                    soapResponse("GetMute", "<CurrentMute>${if (muted) "1" else "0"}</CurrentMute>", "RenderingControl")
                 }
                 "SetMute" -> {
                     val m = extractXmlValue(body, "DesiredMute") == "1"
                     setMute(m)
-                    soapOkResponse("SetMute")
+                    soapOkResponse("SetMute", "RenderingControl")
                 }
                 else -> {
                     Log.w(TAG, "Unknown RenderingControl action: $action")
-                    soapOkResponse(action ?: "Unknown")
+                    soapOkResponse(action ?: "Unknown", "RenderingControl")
                 }
             }
         }
@@ -627,15 +627,17 @@ class DlnaRendererService : Service() {
             return regex.find(xml)?.groupValues?.get(1)
         }
 
-        private fun soapOkResponse(action: String): Response {
-            return soapResponse(action, "")
+        private fun soapOkResponse(action: String, serviceType: String = "AVTransport"): Response {
+            return soapResponse(action, "", serviceType)
         }
 
-        private fun soapResponse(action: String, innerXml: String): Response {
+        private fun soapResponse(action: String, innerXml: String, serviceType: String = "AVTransport"): Response {
+            val ns = "urn:schemas-upnp-org:service:$serviceType:1"
+            val responseTag = action + "Response"
             val xml = """<?xml version="1.0" encoding="UTF-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
   <s:Body>
-    <u:${action}Response xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">$innerXml</u:${action}Response>
+    <u:$responseTag xmlns:u="$ns">$innerXml</u:$responseTag>
   </s:Body>
 </s:Envelope>"""
             return newFixedLengthResponse(Response.Status.OK, "text/xml; charset=\"utf-8\"", xml)
