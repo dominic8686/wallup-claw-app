@@ -331,6 +331,11 @@ class DlnaRendererService : Service() {
                     handleRenderingControlAction(session)
                 }
 
+                // SOAP control endpoint for ConnectionManager
+                uri == "/ConnectionManager/control" && method == Method.POST -> {
+                    handleConnectionManagerAction(session)
+                }
+
                 else -> {
                     Log.d(TAG, "Unhandled: $method $uri")
                     newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "Not Found")
@@ -596,6 +601,33 @@ class DlnaRendererService : Service() {
                 else -> {
                     Log.w(TAG, "Unknown RenderingControl action: $action")
                     soapOkResponse(action ?: "Unknown", "RenderingControl")
+                }
+            }
+        }
+
+        private fun handleConnectionManagerAction(session: IHTTPSession): Response {
+            val body = readBody(session)
+            val action = extractSoapAction(session, body)?.replace(Regex("[^a-zA-Z0-9]"), "")
+            Log.d(TAG, "ConnectionManager action: $action")
+
+            return when (action) {
+                "GetProtocolInfo" -> {
+                    val sink = "http-get:*:audio/mpeg:*," +
+                        "http-get:*:audio/mp3:*," +
+                        "http-get:*:audio/mp4:*," +
+                        "http-get:*:audio/aac:*," +
+                        "http-get:*:audio/ogg:*," +
+                        "http-get:*:audio/flac:*," +
+                        "http-get:*:audio/wav:*," +
+                        "http-get:*:audio/x-wav:*," +
+                        "http-get:*:audio/*:*"
+                    soapResponse("GetProtocolInfo",
+                        "<Source></Source><Sink>$sink</Sink>",
+                        "ConnectionManager")
+                }
+                else -> {
+                    Log.w(TAG, "Unknown ConnectionManager action: $action")
+                    soapOkResponse(action ?: "Unknown", "ConnectionManager")
                 }
             }
         }
