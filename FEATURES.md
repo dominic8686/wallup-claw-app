@@ -59,10 +59,11 @@ Complete feature list for the Hermes Voice Agent / Tablet Super-Device platform.
 
 ## TalkingHead.js Avatar
 
-- **3D Animated Avatar** — Optional TalkingHead.js avatar with real-time lip sync displayed in the conversation card.
+- **3D Animated Avatar** — Optional TalkingHead.js avatar with real-time lip sync displayed in the conversation card (65% of panel height).
 - **Local Model** — Avatar GLB model served locally from the token server (no CDN dependency).
-- **Muted Web Audio** — Avatar runs lip sync but audio comes through LiveKit, preventing double audio.
-- **Agent-Driven Speech** — Agent sends `agent_speak` data channel messages; the avatar page handles TTS + lip animation.
+- **Unified Audio Path** — All audio always goes through the LiveKit WebRTC track (`STREAM_VOICE_COMMUNICATION`), even with avatar enabled. The WebView's Web Audio output is muted via a gain node intercept; TalkingHead handles lip sync animation only.
+- **Agent-Driven Speech** — Agent sends `agent_speak` data channel messages for lip sync, then generates TTS and publishes audio frames via LiveKit — both happen in parallel for synchronized playback.
+- **No Double Audio** — The avatar page fetches TTS for lip sync timing data but its audio output is silenced. Users hear speech through the same reliable voice communication stream as non-avatar mode.
 
 ## Device State Management
 

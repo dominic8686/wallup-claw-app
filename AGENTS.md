@@ -89,8 +89,9 @@ A self-hosted voice assistant and multi-tablet intercom system built on **LiveKi
 1. **VAD** — Silero v5 ONNX, 16kHz, 512-sample chunks, speech threshold 0.5
 2. **STT** — OpenRouter chat completions with `input_audio` (default: `google/gemini-3.1-flash-lite-preview`, configurable via `STT_MODEL`)
 3. **MultimodalHandler** — Routes to GPT-4o vision (with camera frame) or Hermes AIAgent (text-only)
-4. **TTS** — edge-tts or OpenAI TTS (configurable via `TTS_BACKEND`), PCM via pydub *(skipped when `AVATAR_ENABLED=true`)*
-5. **Playback** — Published to LiveKit audio track, 20ms frame pacing
+4. **TTS** — edge-tts or OpenAI TTS (configurable via `TTS_BACKEND`), MP3 → 24kHz PCM via pydub
+5. **Playback** — Published to LiveKit audio track (`STREAM_VOICE_COMMUNICATION`), 20ms frame pacing
+6. **Avatar lip sync** (when `AVATAR_ENABLED=true`) — Agent also sends `agent_speak` data channel message; TalkingHead.js animates lips from its own TTS fetch (audio muted). Both run in parallel.
 
 **Vision pipeline**:
 1. Video frames captured from tablet's LiveKit video track → JPEG buffer (per device)
@@ -387,6 +388,8 @@ livekit-voice-agent/
 - ✅ Per-Tablet Rooms — Isolated LiveKit rooms per device, no cross-talk
 - ✅ Video Calling — LiveKit video tracks during intercom calls
 - ✅ DeviceStateManager — Central resource coordinator for mic/camera/audio focus
+- ✅ TalkingHead.js Avatar — 3D lip-synced avatar with unified audio path (WebRTC for all audio, WebView muted)
+- ✅ OpenAI TTS backend — Selectable via `TTS_BACKEND=openai` alongside free edge-tts
 
 ### Planned
 - QR code device onboarding (HA generates QR → tablet scans)

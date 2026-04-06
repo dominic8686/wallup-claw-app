@@ -106,7 +106,7 @@ Key variables in `docker-compose.yml` (see `.env.example` for all):
 | `VISION_ALWAYS_ATTACH` | `true` | Attach camera frame to every utterance |
 | `RTSP_ENABLED` | `true` | Enable LiveKit to RTSP camera bridge |
 | `RTSP_FPS` | `5` | RTSP stream frame rate |
-| `AVATAR_ENABLED` | `false` | Use TalkingHead.js avatar instead of audio TTS |
+| `AVATAR_ENABLED` | `false` | Enable TalkingHead.js avatar lip sync (audio always via LiveKit) |
 
 ## Key Files
 
