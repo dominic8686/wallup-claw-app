@@ -12,7 +12,6 @@ See [AGENTS.md](AGENTS.md) for architecture, deployment, and operations.
 - **Security Camera** — 720p live RTSP stream + snapshot endpoint, viewable in Home Assistant dashboards or Frigate
 - **DLNA Speaker** — HA discovers each tablet as a `media_player` entity for TTS announcements and media playback
 - **Multi-Tablet Intercom** — Video/audio calls between rooms, with HA automation triggers
-- **3D Avatar** — Optional TalkingHead.js animated avatar with real-time lip sync
 
 ## Architecture
 
@@ -63,7 +62,7 @@ See [AGENTS.md](AGENTS.md) for architecture, deployment, and operations.
 # Sync to LXC
 $KEY = "C:\Users\domin\.ssh\proxmox_hermes"
 $LXC = "root@192.168.211.153"
-scp -i $KEY -r agent token-server avatar livekit.yaml docker-compose.yml .env "${LXC}:/opt/livekit-voice-agent/"
+scp -i $KEY -r agent token-server livekit.yaml docker-compose.yml .env "${LXC}:/opt/livekit-voice-agent/"
 
 # Start all services
 ssh -i $KEY $LXC "docker compose -f /opt/livekit-voice-agent/docker-compose.yml up -d --build"
@@ -106,7 +105,6 @@ Key variables in `docker-compose.yml` (see `.env.example` for all):
 | `VISION_ALWAYS_ATTACH` | `true` | Attach camera frame to every utterance |
 | `RTSP_ENABLED` | `true` | Enable LiveKit to RTSP camera bridge |
 | `RTSP_FPS` | `5` | RTSP stream frame rate |
-| `AVATAR_ENABLED` | `false` | Enable TalkingHead.js avatar lip sync (audio always via LiveKit) |
 
 ## Key Files
 
@@ -129,7 +127,6 @@ livekit-voice-agent/
 │       ├── audio/AudioPipelineManager.kt  # Mic capture for wake word + LiveKit
 │       └── settings/AppSettings.kt        # All persistent settings
 ├── homeassistant/custom_components/hermes_intercom/  # HA integration
-├── avatar/index.html               # TalkingHead.js avatar page
 ├── docker-compose.yml              # All services
 ├── FEATURES.md                     # Complete feature list
 ├── AGENTS.md                       # Architecture and operations guide

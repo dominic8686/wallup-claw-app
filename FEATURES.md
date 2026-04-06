@@ -57,14 +57,6 @@ Complete feature list for the Hermes Voice Agent / Tablet Super-Device platform.
 - **Auto-Detection** — App auto-discovers HA on the local network (mDNS/IP scan).
 - **Real-Time HA Events** — Agent monitors HA WebSocket for state changes (lights, sensors, climate) and logs them.
 
-## TalkingHead.js Avatar
-
-- **3D Animated Avatar** — Optional TalkingHead.js avatar with real-time lip sync displayed in the conversation card (65% of panel height).
-- **Local Model** — Avatar GLB model served locally from the token server (no CDN dependency).
-- **Unified Audio Path** — All audio always goes through the LiveKit WebRTC track (`STREAM_VOICE_COMMUNICATION`), even with avatar enabled. The WebView's Web Audio output is muted via a gain node intercept; TalkingHead handles lip sync animation only.
-- **Agent-Driven Speech** — Agent sends `agent_speak` data channel messages for lip sync, then generates TTS and publishes audio frames via LiveKit — both happen in parallel for synchronized playback.
-- **No Double Audio** — The avatar page fetches TTS for lip sync timing data but its audio output is silenced. Users hear speech through the same reliable voice communication stream as non-avatar mode.
-
 ## Device State Management
 
 - **Central Resource Coordinator** — `DeviceStateManager` manages mic, camera, and audio focus across three states: IDLE, CONVERSATION, INTERCOM_CALL.
@@ -79,7 +71,7 @@ Complete feature list for the Hermes Voice Agent / Tablet Super-Device platform.
 - **Heartbeat + Auto-Cleanup** — Tablets send heartbeats every 15s. Devices go offline after 45s, purged after 5min.
 - **Heartbeat 404 Re-Registration** — If a heartbeat gets 404 (server restart), the tablet auto-re-registers.
 - **Call Signaling Relay** — Long-poll endpoint for real-time call signal delivery.
-- **TTS Proxy** — `GET /tts?text=...&voice=...` proxies to OpenAI TTS for the avatar page.
+- **TTS Proxy** — `GET /tts?text=...&voice=...` proxies to edge-tts or OpenAI TTS.
 - **mDNS Advertisement** — Registers `_hermes-intercom._tcp.local.` for network discovery.
 - **Remote Configuration** — `POST /configure` pushes settings to tablets (display name, room location).
 

@@ -91,7 +91,6 @@ A self-hosted voice assistant and multi-tablet intercom system built on **LiveKi
 3. **MultimodalHandler** — Routes to GPT-4o vision (with camera frame) or Hermes AIAgent (text-only)
 4. **TTS** — edge-tts or OpenAI TTS (configurable via `TTS_BACKEND`), MP3 → 24kHz PCM via pydub
 5. **Playback** — Published to LiveKit audio track (`STREAM_VOICE_COMMUNICATION`), 20ms frame pacing
-6. **Avatar lip sync** (when `AVATAR_ENABLED=true`) — Agent also sends `agent_speak` data channel message; TalkingHead.js animates lips from its own TTS fetch (audio muted). Both run in parallel.
 
 **Vision pipeline**:
 1. Video frames captured from tablet's LiveKit video track → JPEG buffer (per device)
@@ -132,7 +131,7 @@ A self-hosted voice assistant and multi-tablet intercom system built on **LiveKi
 | `AudioPipelineManager` | Mic capture with dual-channel output (wake word + LiveKit) |
 | `WakeWordManager` | ONNX wake word detection (Hey Jarvis, Alexa, Hey Mycroft) |
 | `AppSettings` | DataStore persistence for all settings (incl. `security_camera_enabled`) |
-| `ConversationCard` | Chat panel + optional TalkingHead.js avatar WebView |
+| `ConversationCard` | Chat panel with live transcripts |
 | `HomeAssistantDetector` | Auto-discovers HA instance on local network |
 
 ### 5. Hermes Intercom Tools
@@ -369,7 +368,6 @@ livekit-voice-agent/
 │       └── hermes-intercom-card.js # Lovelace custom card
 ├── tools/
 │   └── intercom_tool.py            # Hermes intercom tools
-├── avatar/index.html               # TalkingHead.js avatar page
 ├── livekit.yaml                    # LiveKit server config
 ├── docker-compose.yml              # All services (LiveKit, agent, token-server, mediamtx)
 ├── .env                            # All credentials and config
@@ -388,7 +386,6 @@ livekit-voice-agent/
 - ✅ Per-Tablet Rooms — Isolated LiveKit rooms per device, no cross-talk
 - ✅ Video Calling — LiveKit video tracks during intercom calls
 - ✅ DeviceStateManager — Central resource coordinator for mic/camera/audio focus
-- ✅ TalkingHead.js Avatar — 3D lip-synced avatar with unified audio path (WebRTC for all audio, WebView muted)
 - ✅ OpenAI TTS backend — Selectable via `TTS_BACKEND=openai` alongside free edge-tts
 
 ### Planned
