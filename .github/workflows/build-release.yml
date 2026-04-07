@@ -40,13 +40,16 @@ jobs:
       - name: Write local.properties
         run: echo "GITHUB_RELEASES_TOKEN=${{ secrets.RELEASES_PAT }}" > local.properties
 
-      - name: Restore debug keystore
-        run: |
-          mkdir -p ~/.android
-          echo "${{ secrets.DEBUG_KEYSTORE }}" | base64 -d > ~/.android/debug.keystore
+      - name: Restore release keystore
+        run: echo "${{ secrets.RELEASE_KEYSTORE }}" | base64 -d > release.keystore
         shell: bash
 
       - name: Build Release APK
+        env:
+          RELEASE_STORE_FILE: release.keystore
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: wallup-release
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: ./gradlew assembleRelease
 
       - name: Rename APK
