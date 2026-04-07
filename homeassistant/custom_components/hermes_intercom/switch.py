@@ -29,7 +29,6 @@ async def async_setup_entry(
                 new_entities.append(TabletConfigSwitch(coordinator, device_id, entry, "security_camera_enabled", "Security Camera", "mdi:cctv", default_on=True))
                 new_entities.append(TabletConfigSwitch(coordinator, device_id, entry, "auto_answer_calls", "Auto Answer Calls", "mdi:phone-check", default_on=False))
                 new_entities.append(TabletConfigSwitch(coordinator, device_id, entry, "auto_start_on_boot", "Auto Start on Boot", "mdi:power", default_on=True))
-                new_entities.append(TabletConfigSwitch(coordinator, device_id, entry, "avatar_enabled", "Avatar Mode", "mdi:face-agent", default_on=False))
         if new_entities:
             async_add_entities(new_entities)
 

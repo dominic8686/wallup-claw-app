@@ -59,3 +59,7 @@
 
 # NanoHTTPD (DLNA service)
 -keep class fi.iki.elonen.** { *; }
+
+# OSGI annotations (referenced by jupnp)
+-dontwarn org.osgi.service.component.annotations.Component
+-dontwarn org.osgi.service.metatype.annotations.Designate

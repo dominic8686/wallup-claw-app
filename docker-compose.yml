@@ -35,7 +35,10 @@ services:
       # HA add-on: http://<ha-ip>:9583/private_<secret>
       # HA built-in: http://<ha-ip>:8123/api/mcp (needs HA_MCP_TOKEN)
       # HA_MCP_TOKEN is loaded from ~/.hermes/.env at runtime (HASS_TOKEN)
-      - HA_MCP_URL=http://192.168.211.3:8123/api/mcp
+      - HA_MCP_URL=http://localhost:9583/mcp
+
+      # --- Hermes brain for complex tasks ---
+      - HERMES_API_URL=http://localhost:8642/v1
 
       # --- Multi-tablet session manager ---
       - TOKEN_SERVER_URL=http://localhost:8090
@@ -46,6 +49,7 @@ services:
       - /root/.hermes:/root/.hermes
     depends_on:
       - livekit-server
+      - hermes
     restart: unless-stopped
 
   token-server:
@@ -56,7 +60,6 @@ services:
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
       - LIVEKIT_EXTERNAL_URL=ws://${CT200_HOST}:7880
       - PORT=8090
-      - AVATAR_DIR=/app/avatar
       # TTS backend (mirrors voice-agent setting so TalkingHead uses the same voice)
       - TTS_BACKEND=openai
       - TTS_VOICE=nova
@@ -64,6 +67,20 @@ services:
       - INTERCOM_API_KEY=${INTERCOM_API_KEY}
     depends_on:
       - livekit-server
+    restart: unless-stopped
+
+  hermes:
+    image: hermes-agent
+    network_mode: host
+    environment:
+      - HERMES_HOME=/opt/data
+      - API_SERVER_ENABLED=true
+      - API_SERVER_HOST=127.0.0.1
+      - API_SERVER_PORT=8642
+    volumes:
+      - /root/.hermes:/opt/data
+      - /root/.config:/root/.config
+    command: ["gateway", "run", "--replace"]
     restart: unless-stopped
 
   admin-dashboard:

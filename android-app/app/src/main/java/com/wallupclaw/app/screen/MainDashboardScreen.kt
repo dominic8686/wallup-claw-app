@@ -259,7 +259,8 @@ fun MainDashboardScreen() {
     val autoAnswerCalls by appSettings.autoAnswerCalls.collectAsState(initial = false)
     val isCallActive = intercomState == IntercomState.RINGING || intercomState == IntercomState.IN_CALL || intercomState == IntercomState.CALLING
     val showLeftPanel = contactsVisible || isCallActive
-    val showRightPanel = isConversation || chatMessages.isNotEmpty()
+    val showConversationPanel = isConversation || chatMessages.isNotEmpty()
+    val showRightPanel = settingsVisible || showConversationPanel
 
     // --- Auto-answer incoming calls ---
     LaunchedEffect(intercomState, autoAnswerCalls) {
@@ -910,9 +911,40 @@ fun MainDashboardScreen() {
                         )
                 )
             }
-            // Conversation Chat Card — right-aligned, slides in
+            // Tap-to-dismiss overlay for the settings panel — over the center content area
+            if (settingsVisible) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .fillMaxHeight()
+                        .padding(start = webViewStartPadding)
+                        .width(webViewWidth)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = { settingsVisible = false }
+                        )
+                )
+            }
+            // Right panel — Settings or Conversation, slides in from the right
+            // Settings takes precedence over conversation for the right slot
             AnimatedVisibility(
-                visible = showRightPanel,
+                visible = settingsVisible,
+                modifier = Modifier.align(Alignment.CenterEnd),
+                enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+                exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(),
+            ) {
+                SettingsDrawer(
+                    onDismiss = { settingsVisible = false },
+                    settings = appSettings,
+                    haConnectionOk = haConnectionOk,
+                    modifier = Modifier
+                        .width(chatCardWidth)
+                        .fillMaxHeight()
+                )
+            }
+            AnimatedVisibility(
+                visible = showConversationPanel && !settingsVisible,
                 modifier = Modifier.align(Alignment.CenterEnd),
                 enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
                 exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(),
@@ -934,13 +966,6 @@ fun MainDashboardScreen() {
             }
         }
 
-        // Settings Drawer overlay — draw before the bubble stack so the buttons stay visible on top
-        SettingsDrawer(
-            visible = settingsVisible,
-            onDismiss = { settingsVisible = false },
-            settings = appSettings,
-            haConnectionOk = haConnectionOk,
-        )
         // Bubble buttons — stacked in the chosen corner
         val isBottom = buttonCorner == ButtonCorner.BOTTOM_END || buttonCorner == ButtonCorner.BOTTOM_START
         Column(

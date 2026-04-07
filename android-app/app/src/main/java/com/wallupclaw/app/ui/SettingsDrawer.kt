@@ -1,12 +1,8 @@
 package com.wallupclaw.app.ui
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -27,7 +23,6 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsDrawer(
-    visible: Boolean,
     onDismiss: () -> Unit,
     settings: AppSettings,
     haConnectionOk: Boolean,
@@ -49,42 +44,15 @@ fun SettingsDrawer(
     val autoAnswerCalls by settings.autoAnswerCalls.collectAsState(initial = false)
     val buttonCorner by settings.buttonCorner.collectAsState(initial = ButtonCorner.BOTTOM_END)
 
-    // Scrim + drawer
-    if (visible) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            // Scrim (tap to dismiss)
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.4f))
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = onDismiss
-                    )
-            )
-        }
-    }
-
-    Box(
-        modifier = modifier.fillMaxSize(),
-        contentAlignment = Alignment.CenterEnd,
+    Column(
+        modifier = modifier
+            .fillMaxHeight()
+            .clip(RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(24.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(20.dp)
     ) {
-        AnimatedVisibility(
-            visible = visible,
-            enter = slideInHorizontally(initialOffsetX = { it }),
-            exit = slideOutHorizontally(targetOffsetX = { it }),
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .fillMaxWidth(0.4f)
-                    .clip(RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp))
-                    .background(MaterialTheme.colorScheme.surface)
-                    .padding(24.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(20.dp)
-            ) {
                 // Header
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -497,7 +465,5 @@ fun SettingsDrawer(
                         color = if (pendingApkUrl != null) Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-            }
-        }
     }
 }
