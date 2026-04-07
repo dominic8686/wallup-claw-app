@@ -60,6 +60,15 @@ import android.provider.Settings
 import org.json.JSONObject
 
 private const val TAG = "MainDashboard"
+private const val EV = "ConvEvent"  // structured event log tag
+private var convSessionId = 0       // monotonic session counter
+
+/** Structured event logger — correlate with server logs via device_id + timestamp. */
+private fun logEvent(event: String, detail: String = "") {
+    val ts = System.currentTimeMillis()
+    val suffix = if (detail.isNotEmpty()) " | $detail" else ""
+    Log.i(EV, "[$ts] session=$convSessionId $event$suffix")
+}
 
 @Serializable
 object MainDashboardRoute
@@ -151,29 +160,40 @@ fun MainDashboardScreen() {
     // --- Layout ---
     val isConversation = micGateState == MicGateState.AGENT_ACTIVE
 
+    // Track panel visibility changes for diagnostics
+    val showConvDebug = isConversation || chatMessages.isNotEmpty()
+    LaunchedEffect(showConvDebug, micGateState, chatMessages.size) {
+        logEvent("PANEL_STATE", "visible=$showConvDebug micGate=$micGateState isConv=$isConversation msgs=${chatMessages.size}")
+    }
+
     // --- Mic-gate lifecycle: wake word toggles LiveKit mic on/off ---
     // All resource management (mic, camera, audio focus) is handled by DeviceStateManager.
     val activateMic: () -> Unit = remember(room, deviceStateManager) {
         {
             if (micGateState == MicGateState.WAKE_WORD) {
+                convSessionId++
+                logEvent("ACTIVATE_MIC", "from=${micGateState} msgs=${chatMessages.size}")
                 micGateState = MicGateState.AGENT_ACTIVE
                 conversationStatus = ConversationStatus.LISTENING
                 chatMessages.clear()
+                logEvent("STATE_CHANGED", "micGate=AGENT_ACTIVE panel_visible=${true}")
                 scope.launch {
-                    // DeviceStateManager: stop audioPipeline → unmute LiveKit mic → duck DLNA → speaker on
+                    logEvent("TRANSITION_START", "target=CONVERSATION")
                     deviceStateManager.transitionTo(DeviceState.CONVERSATION)
+                    logEvent("TRANSITION_DONE", "target=CONVERSATION")
                     Log.i(TAG, "Mic activated — native agent is now listening")
-                    // Capture local camera track (fallback if TrackPublished event was missed)
                     delay(500)
                     if (localCameraTrack == null) {
                         val camPub = room.localParticipant.getTrackPublication(Track.Source.CAMERA)
                         val track = camPub?.track
                         if (track is VideoTrack) {
                             localCameraTrack = track
-                            Log.i(TAG, "Camera track captured via fallback")
+                            logEvent("CAMERA_FALLBACK", "captured local camera track")
                         }
                     }
                 }
+            } else {
+                logEvent("ACTIVATE_MIC_SKIP", "already in $micGateState")
             }
         }
     }
@@ -181,13 +201,19 @@ fun MainDashboardScreen() {
     val deactivateMic: () -> Unit = remember(room, deviceStateManager) {
         {
             if (micGateState == MicGateState.AGENT_ACTIVE) {
+                logEvent("DEACTIVATE_MIC", "msgs=${chatMessages.size}")
+                // Set gate SYNCHRONOUSLY to prevent re-entry from wake word / transcription
+                micGateState = MicGateState.WAKE_WORD
                 scope.launch {
-                    // DeviceStateManager: mute LiveKit mic → restart audioPipeline → un-duck DLNA
+                    logEvent("TRANSITION_START", "target=IDLE")
                     deviceStateManager.transitionTo(DeviceState.IDLE)
-                    micGateState = MicGateState.WAKE_WORD
-                    chatMessages.clear()  // dismiss conversation card
+                    logEvent("TRANSITION_DONE", "target=IDLE")
+                    chatMessages.clear()
+                    logEvent("CARD_DISMISSED", "msgs_after_clear=${chatMessages.size} panel=${chatMessages.isNotEmpty()}")
                     Log.i(TAG, "Mic deactivated — back to wake word")
                 }
+            } else {
+                logEvent("DEACTIVATE_MIC_SKIP", "already in $micGateState")
             }
         }
     }
@@ -424,7 +450,7 @@ fun MainDashboardScreen() {
     val pendingConversation by intercomManager.pendingConversation.collectAsState()
     LaunchedEffect(pendingConversation) {
         if (!pendingConversation) return@LaunchedEffect
-        Log.i(TAG, "Remote conversation trigger received")
+        logEvent("REMOTE_TRIGGER", "pendingConversation=true micGate=$micGateState")
         activateMic()
         intercomManager.clearConversation()
     }
@@ -598,9 +624,13 @@ fun MainDashboardScreen() {
         // Listen for wake word detections → activate mic
         launch {
             wakeWordManager.scores.collectLatest { score ->
-                if (score > 0.5f && micGateState == MicGateState.WAKE_WORD) {
-                    Log.i(TAG, "Wake word detected! score=${"%.3f".format(score)}")
-                    activateMic()
+                if (score > 0.5f) {
+                    logEvent("WAKE_WORD", "score=${"%.3f".format(score)} micGate=$micGateState")
+                    if (micGateState == MicGateState.WAKE_WORD) {
+                        activateMic()
+                    } else {
+                        logEvent("WAKE_WORD_IGNORED", "already in $micGateState")
+                    }
                 }
             }
         }
@@ -640,19 +670,29 @@ fun MainDashboardScreen() {
                     // Native LiveKit agent sends transcription events for both user and agent
                     for (segment in event.transcriptionSegments) {
                         val isUser = event.participant?.identity == room.localParticipant.identity
+                        val role = if (isUser) "user" else "agent"
                         val existingIdx = chatMessages.indexOfFirst { it.id == segment.id }
+                        val isUpdate = existingIdx >= 0
+                        logEvent("TRANSCRIPTION", "role=$role update=$isUpdate micGate=$micGateState id=${segment.id} text=${segment.text.take(60)}")
+
+                        // Guard: ignore transcriptions that arrive after deactivation
+                        if (micGateState != MicGateState.AGENT_ACTIVE) {
+                            logEvent("TRANSCRIPTION_DROPPED", "micGate=$micGateState — ignoring stale transcription")
+                            continue
+                        }
+
                         val msg = ChatMessage(
                             id = segment.id,
                             text = segment.text,
                             isUser = isUser,
                         )
-                        if (existingIdx >= 0) {
+                        if (isUpdate) {
                             chatMessages[existingIdx] = msg
                         } else {
                             chatMessages.add(msg)
                         }
                         conversationStatus = if (isUser) ConversationStatus.THINKING else ConversationStatus.SPEAKING
-                        Log.d(TAG, "Transcription [${if (isUser) "user" else "agent"}]: ${segment.text}")
+                        Log.d(TAG, "Transcription [$role]: ${segment.text}")
                     }
                 }
                 else -> {
@@ -955,8 +995,9 @@ fun MainDashboardScreen() {
                     videoTrack = localCameraTrack,
                     room = room,
                     onClose = {
+                        logEvent("CARD_CLOSE_BUTTON", "micGate=$micGateState msgs=${chatMessages.size}")
                         deactivateMic()
-                        chatMessages.clear()  // always dismiss card even if mic already muted
+                        chatMessages.clear()
                         localCameraTrack = null
                     },
                     modifier = Modifier
