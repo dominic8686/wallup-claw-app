@@ -168,23 +168,30 @@ def _build_llm():
     model = LIVEKIT_LLM.lower().strip()
 
     # --- Realtime / speech-to-speech models ---
-    if model in ("gemini-live", "gemini-realtime"):
+    if model in ("gemini-live", "gemini-realtime") or (model.startswith("gemini-") and "live" in model):
         from livekit.plugins import google
-        return google.realtime.RealtimeModel(
-            voice=LIVEKIT_VOICE,
-            temperature=0.8,
-            instructions=LIVEKIT_INSTRUCTIONS,
-        )
+        from google.genai import types
 
-    if model.startswith("gemini-") and "live" in model:
-        # e.g. gemini-3.1-flash-live-preview
-        from livekit.plugins import google
-        return google.realtime.RealtimeModel(
-            model=model,
+        # Context window compression: sliding window keeps sessions alive
+        # beyond the 15-min audio limit by compressing older context.
+        # Session resumption: survives the ~10-min connection resets
+        # by storing a resumption token across reconnects.
+        kwargs = dict(
             voice=LIVEKIT_VOICE,
             temperature=0.8,
             instructions=LIVEKIT_INSTRUCTIONS,
+            context_window_compression=types.ContextWindowCompressionConfig(
+                sliding_window=types.SlidingWindow(),
+            ),
+            session_resumption=types.SessionResumptionConfig(
+                handle=None,  # new session; plugin manages handles on reconnect
+            ),
         )
+        # If an explicit model string was given (e.g. gemini-3.1-flash-live-preview)
+        if model not in ("gemini-live", "gemini-realtime"):
+            kwargs["model"] = model
+
+        return google.realtime.RealtimeModel(**kwargs)
 
     if model in ("openai-realtime", "gpt-4o-realtime"):
         from livekit.plugins import openai
