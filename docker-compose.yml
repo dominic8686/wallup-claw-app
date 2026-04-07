@@ -27,9 +27,9 @@ services:
       # --- LiveKit AgentSession ---
       # LIVEKIT_LLM: gemini-live | openai-realtime | gemini-2.5-flash | gpt-4o-mini
       # LIVEKIT_VOICE: Puck | Charon | Kore | Fenrir | Aoede (Gemini) | alloy | echo (OpenAI)
-      - LIVEKIT_LLM=openai-realtime
-      - LIVEKIT_VOICE=alloy
-      # OPENAI_API_KEY is loaded from ~/.hermes/.env via load_dotenv
+      - LIVEKIT_LLM=gemini-live
+      - LIVEKIT_VOICE=Aoede
+      # GOOGLE_API_KEY is loaded from ~/.hermes/.env via load_dotenv
 
       # --- Home Assistant via MCP ---
       # HA add-on: http://<ha-ip>:9583/private_<secret>

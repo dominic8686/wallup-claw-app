@@ -895,6 +895,21 @@ fun MainDashboardScreen() {
                 }
             }
 
+            // Tap-to-dismiss overlay for the intercom panel — only over the center content area
+            if (contactsVisible && !isCallActive) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .fillMaxHeight()
+                        .padding(start = webViewStartPadding)
+                        .width(webViewWidth)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = { contactsVisible = false }
+                        )
+                )
+            }
             // Conversation Chat Card — right-aligned, slides in
             AnimatedVisibility(
                 visible = showRightPanel,
@@ -917,19 +932,6 @@ fun MainDashboardScreen() {
                         .fillMaxHeight()
                 )
             }
-        }
-
-        // Tap-to-dismiss scrim when contacts panel is open
-        if (contactsVisible && !isCallActive) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = { contactsVisible = false }
-                    )
-            )
         }
 
         // Settings Drawer overlay — draw before the bubble stack so the buttons stay visible on top
